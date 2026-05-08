@@ -4,6 +4,8 @@ A complete, copy-pasteable record of every change made to set up Pi Coding Agent
 
 Tested on macOS (zsh) with Node 24, npm 11, Pi 0.73.0.
 
+> **Quick install:** `bash install.sh` from the repo root installs everything automatically. The manual `cp` commands in each section below are for reference — run them from inside the `piforge/` directory (`$(pwd)` = the repo root).
+
 ---
 
 ## Table of contents
@@ -603,7 +605,7 @@ Local 35B models can spiral into multi-thousand token reasoning loops. This exte
 **File: `~/.pi/agent/extensions/thinking-guard.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/thinking-guard.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/thinking-guard.ts ~/.pi/agent/extensions/
 ```
 
 ### What it enforces
@@ -636,7 +638,7 @@ Context quality degrades before the window fills. This extension watches token u
 **File: `~/.pi/agent/extensions/context-monitor.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/context-monitor.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/context-monitor.ts ~/.pi/agent/extensions/
 ```
 
 ### What it enforces
@@ -674,7 +676,7 @@ When the model gives a long analysis response without writing to disk, that anal
 **File: `~/.pi/agent/extensions/analysis-guard.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/analysis-guard.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/analysis-guard.ts ~/.pi/agent/extensions/
 ```
 
 ### What it enforces
@@ -705,7 +707,7 @@ Edit `~/.pi/agent/extensions/analysis-guard.ts`:
 **File: `~/.pi/agent/extensions/distill.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/distill.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/distill.ts ~/.pi/agent/extensions/
 ```
 
 ### Smart ordering pipeline
@@ -773,7 +775,7 @@ Plan the implementation in numbered steps. Implement ONE step at a time and stop
 **File: `~/.pi/agent/extensions/first-prompt.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/first-prompt.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/first-prompt.ts ~/.pi/agent/extensions/
 ```
 
 ### Behavior
@@ -803,7 +805,7 @@ The selection step is an **isolated HTTP call** to Pi's model endpoint. The LLM 
 **File: `~/.pi/agent/extensions/knowledge-injector.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/knowledge-injector.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/knowledge-injector.ts ~/.pi/agent/extensions/
 ```
 
 ### Knowledge folder setup
@@ -825,8 +827,8 @@ Place tech-specific knowledge files here. Name them `<tech>-<type>.md`:
 PiForge ships two starter files — copy them during install:
 
 ```bash
-cp ~/Desktop/Claude\ code/piforge/knowledge/svelte5-gotchas.md ~/.pi/knowledge/
-cp ~/Desktop/Claude\ code/piforge/knowledge/astro-gotchas.md ~/.pi/knowledge/
+cp $(pwd)/knowledge/svelte5-gotchas.md ~/.pi/knowledge/
+cp $(pwd)/knowledge/astro-gotchas.md ~/.pi/knowledge/
 ```
 
 ### Writing knowledge files
@@ -859,7 +861,7 @@ Then `/reload` to apply, or start a new Pi session.
 **File: `~/.pi/agent/extensions/plan-clarify.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/plan-clarify.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/plan-clarify.ts ~/.pi/agent/extensions/
 ```
 
 ### Flow
@@ -911,7 +913,7 @@ Then `/reload` or start fresh session. Adds one turn of latency per planning pha
 **File: `~/.pi/agent/extensions/piforge-manager.ts`**
 
 ```bash
-cp ~/Desktop/Claude\ code/pi-extensions/piforge-manager.ts ~/.pi/agent/extensions/
+cp $(pwd)/extensions/piforge-manager.ts ~/.pi/agent/extensions/
 ```
 
 ### Config file
@@ -928,7 +930,7 @@ EOF
 Or copy from PiForge:
 
 ```bash
-cp ~/Desktop/Claude\ code/piforge/config/piforge.json ~/.pi/piforge.json
+cp $(pwd)/config/piforge.json ~/.pi/piforge.json
 ```
 
 ### Commands
@@ -1015,7 +1017,7 @@ Expected behaviour on a "build me a Web-OS desktop in index.html" prompt:
 |---|---|---|
 | `ctx.sendMessage is not a function` | `thinking-guard`, `context-monitor`, `analysis-guard` crash on steering injection | `sendMessage` lives on `pi` (ExtensionAPI), not `ctx` (ExtensionContext). All three extensions updated to use `pi.sendMessage(...)` |
 
-All staging files in `~/Desktop/Claude code/pi-extensions/` reflect the fix.
+All extension files in `piforge/extensions/` reflect the fix.
 
 ### Benchmark results
 
@@ -1169,21 +1171,7 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         └── piforge-manager.ts          ← /piforge toggle command
 ```
 
-Staging copies of all extensions live at:
-```
-~/Desktop/Claude code/pi-extensions/
-├── incremental-guard.ts
-├── thinking-guard.ts
-├── context-monitor.ts
-├── analysis-guard.ts
-├── distill.ts
-├── first-prompt.ts
-├── knowledge-injector.ts
-├── plan-clarify.ts
-└── piforge-manager.ts
-```
-
-Edit in staging, copy to `~/.pi/agent/extensions/`, then `/reload` inside Pi.
+All extension source files live in `piforge/extensions/`. To update an extension: edit the file there, then copy it to `~/.pi/agent/extensions/` and run `/reload` inside Pi. Or re-run `bash install.sh` to reinstall everything.
 
 ---
 

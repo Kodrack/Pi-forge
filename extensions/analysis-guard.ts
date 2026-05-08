@@ -9,7 +9,6 @@
 //   analysis-guard     → prevents useful analysis from being lost to context
 //
 // Install: copy to ~/.pi/agent/extensions/analysis-guard.ts
-// Staging:  ~/Desktop/Claude code/pi-extensions/analysis-guard.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -113,7 +112,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       ctx.ui.notify(
         `analysis-guard: triggers on responses >${MIN_ANALYSIS_CHARS} chars with no write/edit tool call. ` +
-        `Edit ~/Desktop/Claude\\ code/pi-extensions/analysis-guard.ts to tune.`,
+        `Edit ~/.pi/agent/extensions/analysis-guard.ts to tune, then /reload.`,
         "info"
       );
     },

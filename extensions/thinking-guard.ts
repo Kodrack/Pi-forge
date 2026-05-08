@@ -8,7 +8,6 @@
 // can't catch because it never becomes a tool call.
 //
 // Install: copy to ~/.pi/agent/extensions/thinking-guard.ts
-// Staging:  ~/Desktop/Claude code/pi-extensions/thinking-guard.ts (not yet active)
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -115,8 +114,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       ctx.ui.notify(
         `thinking-guard: max ${MAX_THINKING_CHARS} chars / ${MAX_THINKING_LINES} lines per thinking block. ` +
-        `Edit ~/Desktop/Claude\\ code/pi-extensions/thinking-guard.ts to change, ` +
-        `then copy to ~/.pi/agent/extensions/ to activate.`,
+        `Edit ~/.pi/agent/extensions/thinking-guard.ts to change limits, then /reload.`,
         "info"
       );
     },

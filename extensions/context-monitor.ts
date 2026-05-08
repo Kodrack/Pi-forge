@@ -7,7 +7,6 @@
 //   URGENT_PERCENT (80%) — "stop everything, write full state, session ending soon"
 //
 // Install: copy to ~/.pi/agent/extensions/context-monitor.ts
-// Staging:  ~/Desktop/Claude code/pi-extensions/context-monitor.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
