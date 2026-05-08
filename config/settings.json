@@ -1,0 +1,13 @@
+{
+  "defaultProvider": "lmstudio",
+  "defaultModel": "qwen3.6-35b-a3b",
+  "defaultThinkingLevel": "medium",
+  "hideThinkingBlock": false,
+  "quietStartup": false,
+  "treeFilterMode": "all",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 8192,
+    "keepRecentTokens": 28000
+  }
+}
