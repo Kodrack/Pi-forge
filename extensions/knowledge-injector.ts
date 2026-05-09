@@ -129,10 +129,18 @@ export default function (pi: ExtensionAPI) {
     const files = listKnowledgeFiles();
     if (files.length === 0) return;
 
-    // get Pi's current model and endpoint — same as what Pi will use
-    const model = ctx.getModel() as any;
-    const baseUrl: string = model?.baseUrl ?? "http://localhost:1234/v1";
-    const modelId: string = model?.id ?? "";
+    // get Pi's current model and endpoint — fall back to LM Studio defaults
+    let baseUrl = "http://localhost:1234/v1";
+    let modelId = "";
+    try {
+      const model = (ctx as any).getModel?.() ?? (pi as any).getModel?.();
+      if (model) {
+        baseUrl = model.baseUrl ?? baseUrl;
+        modelId = model.id ?? modelId;
+      }
+    } catch {
+      // use defaults — LM Studio ignores model id and uses the loaded model
+    }
 
     ctx.ui.notify(`knowledge-injector: selecting from ${files.length} files via isolated call...`, "info");
 
