@@ -1,3 +1,7 @@
 {
-  "disabled": ["knowledge-injector", "plan-clarify", "explore", "distill-awareness", "state-guard"]
+  "disabled": [
+    "plan-clarify",
+    "explore",
+    "distill-awareness"
+  ]
 }
