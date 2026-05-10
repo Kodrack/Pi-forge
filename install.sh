@@ -29,11 +29,24 @@ mkdir -p "$PI_DIR/skills/incremental-codegen"
 echo "✓ ~/.pi/agent directories ready"
 
 # ---------- 3. Copy extensions ----------
-cp "$PIFORGE_DIR/extensions/"*.ts "$PI_DIR/extensions/"
-echo "✓ Extensions installed:"
+# distill-v2.ts is the active version — deploy it as distill.ts
+# distill.ts (v1) stays in the repo for reference but is NOT deployed
 for f in "$PIFORGE_DIR/extensions/"*.ts; do
-  echo "    ~/.pi/agent/extensions/$(basename "$f")"
+  base="$(basename "$f")"
+  # Skip legacy distill v1
+  if [ "$base" = "distill.ts" ]; then
+    continue
+  fi
+  # Deploy distill-v2.ts as distill.ts
+  if [ "$base" = "distill-v2.ts" ]; then
+    cp "$f" "$PI_DIR/extensions/distill.ts"
+    echo "    ~/.pi/agent/extensions/distill.ts (from distill-v2.ts)"
+  else
+    cp "$f" "$PI_DIR/extensions/$base"
+    echo "    ~/.pi/agent/extensions/$base"
+  fi
 done
+echo "✓ Extensions installed"
 
 # ---------- 4. Copy knowledge files ----------
 mkdir -p "$HOME/.pi/knowledge"
@@ -92,5 +105,8 @@ echo "    thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
 echo "    context-monitor active — warn at 65%, urgent at 80%"
 echo "    analysis-guard active (triggers on responses >1000 chars with no file write)"
 echo ""
-echo "  Run /distill [path] inside Pi to build a codebase knowledge base."
+echo "  Commands:"
+echo "    /distill [path]              — build codebase knowledge base"
+echo "    /explore \"question\"           — navigate distilled knowledge"
+echo "  Pi can also call distill_codebase and explore_codebase as tools autonomously."
 echo ""
