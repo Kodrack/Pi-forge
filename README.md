@@ -138,7 +138,7 @@ Add your own — name by tech, keep under 500 tokens, failures only:
 
 ### Project template
 
-`project-template/CLAUDE.md` — drop into any project. Tells the model to use the `.think/` external brain workflow: scan knowledge folder at session start, read `_state.md` first, write one step file per turn, update state after every action.
+`project-template/AGENTS.md` — drop into any project. Tells the model to use the `.think/` external brain workflow: scan knowledge folder at session start, read `_state.md` first, write one step file per turn, update state after every action.
 
 ---
 
@@ -153,7 +153,7 @@ bash install.sh
 Then:
 1. Start LM Studio, load your model, start the server on `:1234`
 2. Edit `~/.pi/agent/models.json` — set the model `id` to match your LM Studio model
-3. Copy `project-template/CLAUDE.md` into any project you work on
+3. Copy `project-template/AGENTS.md` into any project you work on
 4. Run `pi` from your project directory
 
 On startup you should see:
@@ -274,5 +274,5 @@ piforge/
 │   ├── settings.json                   ← Pi global settings
 │   └── piforge.json                    ← extension toggles (plan-clarify + knowledge-injector off by default)
 └── project-template/
-    └── CLAUDE.md                       ← drop in any project
+    └── AGENTS.md                       ← drop in any project
 ```
