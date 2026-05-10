@@ -147,4 +147,123 @@ Start now.`;
       );
     },
   });
+
+  // ── REGISTER AS LLM-CALLABLE TOOL ──────────────────────────────────────
+
+  try {
+    (pi as any).registerTool({
+      name: "explore_codebase",
+      description:
+        "Answer questions about the codebase using pre-distilled summaries at .think/distill/. " +
+        "Much faster than reading source files individually. " +
+        "Requires distill_codebase to have been run first. " +
+        "Returns navigation instructions for reading the relevant distilled files. " +
+        "Use for broad questions: architecture, data flow, how things work, where things are defined.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "The question to answer about the codebase.",
+          },
+        },
+        required: ["question"],
+      },
+      execute: async (
+        toolCallId: string,
+        params: any,
+        signal: AbortSignal,
+        onUpdate: (content: string) => void,
+        ctx: any
+      ): Promise<any> => {
+        const fmt = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+        try {
+        const question = params?.question;
+        if (!question) return fmt("Please provide a question.");
+
+        const cwd = ctx?.cwd || process.cwd();
+        const distillDir = path.join(cwd, ".think", "distill");
+
+        if (!fs.existsSync(distillDir))
+          return fmt("No distilled data found. Run distill_codebase first.");
+
+        let manifest: Manifest | null = null;
+        try {
+          manifest = JSON.parse(
+            fs.readFileSync(path.join(distillDir, "manifest.json"), "utf8")
+          );
+        } catch {}
+
+        const levels: number[] = [];
+        for (let l = 1; l <= 10; l++) {
+          const ld = path.join(distillDir, `L${l}`);
+          if (fs.existsSync(ld)) {
+            try {
+              const files = fs.readdirSync(ld, { recursive: true }) as string[];
+              if (files.some((f: string) => f.endsWith(".md"))) levels.push(l);
+            } catch {}
+          }
+        }
+
+        if (levels.length === 0)
+          return fmt("No distillation levels found. Run distill_codebase first.");
+
+        const deepest = Math.max(...levels);
+        const shallowest = Math.min(...levels);
+
+        let levelDesc = "";
+        for (const l of levels) {
+          const ls = manifest?.levels?.[`L${l}`];
+          const r = ls?.ratio || 50;
+          const cum = Math.round(Math.pow(r / 100, l) * 100);
+          let detail: string;
+          if (l === shallowest) detail = "most detail";
+          else if (l === deepest) detail = "most compressed — scan here first";
+          else detail = "moderate detail";
+          levelDesc += `  L${l}: ~${cum}% of source (${detail})\n`;
+          levelDesc += `    Path: .think/distill/L${l}/\n`;
+        }
+
+        const notesDir = path.join(distillDir, "notes");
+        let notesCtx = "";
+        if (fs.existsSync(notesDir)) {
+          const nf = fs.readdirSync(notesDir).filter((f) => f.endsWith(".md"));
+          if (nf.length > 0) {
+            notesCtx = "\nPre-computed notes:\n";
+            for (const f of nf) notesCtx += `  - .think/distill/notes/${f}\n`;
+          }
+        }
+
+        let dirList = "";
+        try {
+          const dirs = fs
+            .readdirSync(path.join(distillDir, `L${deepest}`), { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => d.name)
+            .sort();
+          if (dirs.length > 0) {
+            dirList = "\nTop-level directories:\n";
+            for (const d of dirs) dirList += `  - ${d}/\n`;
+          }
+        } catch {}
+
+        try { onUpdate({ content: [{ type: "text" as const, text: `Exploring: "${question.slice(0, 50)}..."` }] } as any); } catch {}
+
+        return fmt(`Navigate the distilled knowledge base to answer: "${question}"
+
+Available levels:
+${levelDesc}${notesCtx}${dirList}
+Strategy:
+1. ${notesCtx ? "Check notes files first.\n2. " : ""}Start at L${deepest} — list directories, read relevant files.
+${notesCtx ? "3" : "2"}. Zoom to L${shallowest} for specific files needing more detail.
+${notesCtx ? "4" : "3"}. If summaries aren't enough, read source at: ${manifest?.rootDir || cwd}/<path>
+
+Each distilled file has .md appended (e.g., Controllers/Auth.cs → L1/Controllers/Auth.cs.md).
+Be efficient. Cite files examined.`);
+        } catch (err: any) {
+          return fmt(`explore_codebase error: ${(err?.message || String(err)).slice(0, 500)}`);
+        }
+      },
+    });
+  } catch {}
 }

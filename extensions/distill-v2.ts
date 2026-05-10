@@ -344,6 +344,12 @@ Rules:
 - If already minimal, output unchanged`;
 }
 
+// ── DISTILL HEADER ─────────────────────────────────────────────────────────
+
+function distillHeader(relPath: string): string {
+  return `<!-- distilled: ${new Date().toISOString()} | source: ${relPath} -->\n\n`;
+}
+
 // ── NOTES EXTRACTION ────────────────────────────────────────────────────────
 
 function extractNotes(output: string, relPath: string): { summary: string; notes: string | null } {
@@ -450,7 +456,7 @@ ${merged}`;
       if (notes) writeNotes(notes, purpose, distillDir);
     }
 
-    fs.writeFileSync(outFile, output, "utf8");
+    fs.writeFileSync(outFile, distillHeader(relPath) + output, "utf8");
     appendLog(logFile, `  ✓ merged (${output.length} chars)`);
     ctx.ui.notify(`distill L1 [${index + 1}/${total}] ✓ merged: ${relPath}`, "info");
   } catch (e: any) {
@@ -509,7 +515,7 @@ async function processFile(
 
   // Tiny files — copy as-is
   if (lineCount < 10) {
-    fs.writeFileSync(outFile, content, "utf8");
+    fs.writeFileSync(outFile, distillHeader(relPath) + content, "utf8");
     ctx.ui.notify(`distill L${level} [${index + 1}/${total}] ⏭ tiny: ${relPath}`, "info");
     return;
   }
@@ -549,7 +555,7 @@ async function processFile(
         output = summary;
         if (notes) { writeNotes(notes, purpose, distillDir); hasNotes = true; }
       }
-      fs.writeFileSync(outFile, output, "utf8");
+      fs.writeFileSync(outFile, distillHeader(relPath) + output, "utf8");
       const compression = Math.round((outLines / lineCount) * 100);
       const noteTag = hasNotes ? " 📝" : "";
       appendLog(logFile, `  ✓ ${outLines} lines (${compression}%) in ${elapsed}s${noteTag}`);
@@ -684,10 +690,17 @@ Output ONLY the answer.`;
       ctx.ui.notify("distill: expansion complete.", "info");
 
       pi.sendMessage(
-        `Distillation with purpose complete. The codebase was fully scanned for: "${purpose}"\n\n` +
-        `Here's what was found:\n\n${answer}\n\n` +
-        `Full notes: .think/distill/notes/${slug}.md\n` +
-        `Full answer: .think/distill/notes/${slug}-answer.md`,
+        {
+          customType: "distill_expansion",
+          content: `Distillation with purpose complete. The codebase was fully scanned for: "${purpose}"\n\n` +
+            `Here's what was found:\n\n${answer}\n\n` +
+            `Full notes: .think/distill/notes/${slug}.md\n` +
+            `Full answer: .think/distill/notes/${slug}-answer.md`,
+          display: {
+            label: "distill",
+            content: `Expansion complete for: "${purpose.slice(0, 60)}"`,
+          },
+        },
         { deliverAs: "steer" }
       );
     } else {
@@ -707,6 +720,39 @@ Output ONLY the answer.`;
   } finally {
     try { fs.unlinkSync(promptFile); } catch {}
   }
+}
+
+// ── AUTO-DETECT LEVEL ─────────────────────────────────────────────────────
+
+function detectDistillLevel(inputPath: string, cwd: string): { level: number; distillDir: string } | null {
+  const resolved = path.resolve(cwd, inputPath);
+  const distillDir = path.join(cwd, ".think", "distill");
+  const rel = path.relative(distillDir, resolved);
+  if (rel.startsWith("..")) return null;
+  const match = rel.match(/^L(\d+)(\/|$)/);
+  if (!match) return null;
+  return { level: parseInt(match[1]), distillDir };
+}
+
+// ── CONFIRMATION ──────────────────────────────────────────────────────────
+
+const CONFIRM_THRESHOLD = 30;
+
+function buildBreakdown(files: FileEntry[]): { breakdown: string; estimate: string } {
+  const folderCounts = new Map<string, number>();
+  for (const f of files) {
+    const top = f.relPath.split(path.sep)[0] || f.relPath.split("/")[0] || ".";
+    folderCounts.set(top, (folderCounts.get(top) || 0) + 1);
+  }
+  const breakdown = [...folderCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([folder, count]) => `  ${folder}: ${count} files`)
+    .join("\n");
+  const minutes = Math.round(files.length * 0.75);
+  const estimate = minutes < 60
+    ? `~${minutes} minutes`
+    : `~${(minutes / 60).toFixed(1)} hours`;
+  return { breakdown, estimate };
 }
 
 // ── EXTENSION ──────────────────────────────────────────────────────────────
@@ -761,9 +807,16 @@ export default function (pi: ExtensionAPI) {
       if (hasPurposeFlag && !purpose) {
         const extras = ratioMatch ? ` --ratio ${ratio}` : "";
         pi.sendMessage(
-          `The user wants to run /distill with a purpose-driven investigation. ` +
-          `Ask them: "What are you looking for in this codebase?" ` +
-          `Once they answer, run exactly: /distill --purpose "their answer"${extras}`,
+          {
+            customType: "distill_purpose_prompt",
+            content: `The user wants to run /distill with a purpose-driven investigation. ` +
+              `Ask them: "What are you looking for in this codebase?" ` +
+              `Once they answer, run exactly: /distill --purpose "their answer"${extras}`,
+            display: {
+              label: "distill",
+              content: "Awaiting purpose for investigation...",
+            },
+          },
           { deliverAs: "steer" }
         );
         return;
@@ -854,8 +907,77 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`distill: path not found: ${rootDir}`, "warn");
         return;
       }
-      if (!fs.statSync(rootDir).isDirectory()) {
-        ctx.ui.notify(`distill: not a directory: ${rootDir}`, "warn");
+
+      // Auto-detect: path inside .think/distill/L{N}/ → compress to L{N+1}
+      const detected = detectDistillLevel(targetArg, ctx.cwd);
+      if (detected) {
+        const srcLevel = detected.level;
+        const nextLevel = srcLevel + 1;
+        const inputDir = path.join(detected.distillDir, `L${srcLevel}`);
+        const outputDir = path.join(detected.distillDir, `L${nextLevel}`);
+        const logFile = path.join(detected.distillDir, "distill.log");
+
+        // Resolve what to process: directory or single file
+        const stat = fs.statSync(rootDir);
+        if (stat.isFile()) {
+          const relPath = path.relative(inputDir, rootDir);
+          const outFile = path.join(outputDir, relPath);
+          fs.mkdirSync(path.dirname(outFile), { recursive: true });
+          ctx.ui.notify(`distill: L${srcLevel} → L${nextLevel} (single file: ${relPath})`, "info");
+          await processFile(relPath, inputDir, outputDir, nextLevel, ratio, ctx.cwd, ctx, 0, 1, logFile);
+          ctx.ui.notify(`distill: done — .think/distill/L${nextLevel}/${relPath}`, "info");
+        } else {
+          // Directory inside L{N} — collect .md files
+          const mdFiles: string[] = [];
+          const walkMd = (dir: string) => {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (e.isDirectory()) walkMd(path.join(dir, e.name));
+              else if (e.isFile() && e.name.endsWith(".md")) {
+                mdFiles.push(path.relative(inputDir, path.join(dir, e.name)));
+              }
+            }
+          };
+          walkMd(rootDir);
+
+          if (mdFiles.length === 0) {
+            ctx.ui.notify("distill: no .md files found in the specified path.", "warn");
+            return;
+          }
+
+          ctx.ui.notify(`distill: L${srcLevel} → L${nextLevel} (${mdFiles.length} files at ${ratio}%)`, "info");
+          fs.mkdirSync(outputDir, { recursive: true });
+
+          for (let i = 0; i < mdFiles.length; i++) {
+            await processFile(mdFiles[i], inputDir, outputDir, nextLevel, ratio, ctx.cwd, ctx, i, mdFiles.length, logFile);
+          }
+          ctx.ui.notify(`distill: L${nextLevel} complete.`, "info");
+        }
+        return;
+      }
+
+      // Single file distillation
+      if (fs.statSync(rootDir).isFile()) {
+        const ext = path.extname(rootDir).toLowerCase();
+        if (!INCLUDE_EXTENSIONS.has(ext)) {
+          ctx.ui.notify(`distill: unsupported file type: ${ext}`, "warn");
+          return;
+        }
+        const parentDir = path.dirname(rootDir);
+        const relPath = path.basename(rootDir);
+        const content = fs.readFileSync(rootDir, "utf8");
+        const lines = content.split("\n").length;
+        const sizeKB = Math.round((fs.statSync(rootDir).size / 1024) * 10) / 10;
+        const fileEntry: FileEntry = { relPath, lines, sizeKB, content };
+
+        ctx.ui.notify(`distill: single file — ${relPath} (${lines} lines, ${sizeKB}KB)`, "info");
+
+        const singleDistillDir = path.join(ctx.cwd, ".think", "distill");
+        const outputDir = path.join(singleDistillDir, "L1");
+        const logFile = path.join(singleDistillDir, "distill.log");
+        fs.mkdirSync(outputDir, { recursive: true });
+
+        await processFile(relPath, parentDir, outputDir, 1, ratio, ctx.cwd, ctx, 0, 1, logFile, purpose, singleDistillDir);
+        ctx.ui.notify(`distill: done — .think/distill/L1/${relPath}.md`, "info");
         return;
       }
 
@@ -867,10 +989,22 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      ctx.ui.notify(`distill: ${files.length} files. Building import graph...`, "info");
+      ctx.ui.notify(`distill: ${files.length} files found. Building import graph...`, "info");
       const graph = buildImportGraph(files);
       const topoOrder = topoSort(files, graph);
       const orderedFiles = buildOrderedFileList(files, topoOrder);
+
+      if (orderedFiles.length >= CONFIRM_THRESHOLD && ctx.ui?.select) {
+        const { breakdown, estimate } = buildBreakdown(files);
+        const choice = await ctx.ui.select(
+          `distill: Found ${orderedFiles.length} files\n${breakdown}\nEstimated time: ${estimate}\n\nProceed?`,
+          ["Yes, distill all", "Cancel"]
+        );
+        if (choice !== "Yes, distill all") {
+          ctx.ui.notify("distill: cancelled. Use /distill <subfolder> to narrow scope.", "info");
+          return;
+        }
+      }
 
       fs.mkdirSync(distillDir, { recursive: true });
 
@@ -898,4 +1032,220 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  // ── REGISTER AS LLM-CALLABLE TOOL ──────────────────────────────────────
+
+  try {
+    (pi as any).registerTool({
+      name: "distill_codebase",
+      description:
+        "Create compressed summaries of source code files for faster exploration. " +
+        "Creates multi-level distilled knowledge at .think/distill/. " +
+        "Use when facing a large codebase and needing to understand architecture, data flow, or how components connect. " +
+        "IMPORTANT: If the user's question is about a specific service or folder, pass that folder as the path parameter " +
+        "instead of distilling the entire project. For example, path='Modulario-server' for server questions. " +
+        "Also accepts a single file path for large files — chunking is handled automatically. " +
+        "Check if .think/distill/manifest.json already exists before calling.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Folder to distill relative to working directory. Defaults to current directory.",
+          },
+          ratio: {
+            type: "number",
+            description: "Compression percentage 10-90. Lower means more aggressive. Default: 50.",
+          },
+          purpose: {
+            type: "string",
+            description: "Investigation question — enables purpose-driven note-taking during distillation.",
+          },
+          level: {
+            type: "number",
+            description: "Distillation level. 1 = source to L1, 2 = L1 to L2. Default: 1.",
+          },
+          resume: {
+            type: "boolean",
+            description: "Resume an interrupted distillation.",
+          },
+        },
+      },
+      execute: async (
+        toolCallId: string,
+        params: any,
+        signal: AbortSignal,
+        onUpdate: (content: string) => void,
+        ctx: any
+      ): Promise<any> => {
+        const fmt = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+        try {
+        const targetArg = params?.path || ".";
+        const ratio = params?.ratio
+          ? Math.max(10, Math.min(90, params.ratio))
+          : DEFAULT_RATIO;
+        const purpose = params?.purpose || undefined;
+        const requestedLevel = params?.level || 1;
+        const isResume = params?.resume || false;
+
+        const cwd = ctx?.cwd || process.cwd();
+        const update = (msg: string) => {
+          try { onUpdate({ content: [{ type: "text" as const, text: msg }] } as any); } catch {}
+        };
+        const toolCtx = {
+          cwd,
+          ui: {
+            notify: (msg: string, _level?: string) => { update(msg); },
+          },
+        };
+
+        const dd = path.join(cwd, ".think", "distill");
+
+        if (isResume) {
+          const m = loadManifest(dd);
+          if (!m) return fmt("No manifest found. Call distill_codebase with a path first.");
+          for (const [key, state] of Object.entries(m.levels)) {
+            if (state.done < state.total) {
+              const lvl = parseInt(key.replace("L", ""));
+              await distillLevel(lvl, state.ratio, m, dd, toolCtx);
+              return fmt(`Resumed and completed ${key}. ${state.total} files at ${state.ratio}% compression. Use explore_codebase to query.`);
+            }
+          }
+          return fmt("All levels already complete. Use explore_codebase to query.");
+        }
+
+        if (requestedLevel > 1) {
+          const m = loadManifest(dd);
+          if (!m) return fmt("No manifest. Run distill_codebase at level 1 first.");
+          const prevKey = `L${requestedLevel - 1}`;
+          const prev = m.levels[prevKey];
+          if (!prev || prev.done < prev.total) return fmt(`${prevKey} not complete yet.`);
+          const lk = `L${requestedLevel}`;
+          if (m.levels[lk]?.done >= m.levels[lk]?.total) return fmt(`${lk} already complete.`);
+          await distillLevel(requestedLevel, ratio, m, dd, toolCtx);
+          return fmt(`${lk} complete. ${m.files.length} files at ${ratio}%.`);
+        }
+
+        const em = loadManifest(dd);
+        if (em) {
+          const l1 = em.levels["L1"];
+          if (l1 && l1.done >= l1.total)
+            return fmt(`L1 already complete (${l1.total} files). Use explore_codebase to query.`);
+          if (l1 && l1.done > 0)
+            return fmt(`L1 in progress (${l1.done}/${l1.total}). Call with resume=true.`);
+        }
+
+        const rootDir = path.resolve(cwd, targetArg);
+        if (!fs.existsSync(rootDir))
+          return fmt(`Path not found: ${rootDir}`);
+
+        // Auto-detect: path inside .think/distill/L{N}/ → compress to L{N+1}
+        const detected = detectDistillLevel(targetArg, cwd);
+        if (detected) {
+          const srcLevel = detected.level;
+          const nextLevel = srcLevel + 1;
+          const inputDir = path.join(detected.distillDir, `L${srcLevel}`);
+          const outputDir = path.join(detected.distillDir, `L${nextLevel}`);
+          const logFile = path.join(detected.distillDir, "distill.log");
+
+          const stat = fs.statSync(rootDir);
+          if (stat.isFile()) {
+            const relPath = path.relative(inputDir, rootDir);
+            fs.mkdirSync(path.dirname(path.join(outputDir, relPath)), { recursive: true });
+            update(`distill: L${srcLevel} → L${nextLevel} (single file: ${relPath})`);
+            await processFile(relPath, inputDir, outputDir, nextLevel, ratio, cwd, toolCtx, 0, 1, logFile);
+            return fmt(`L${srcLevel} → L${nextLevel} done: .think/distill/L${nextLevel}/${relPath}`);
+          } else {
+            const mdFiles: string[] = [];
+            const walkMd = (dir: string) => {
+              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (e.isDirectory()) walkMd(path.join(dir, e.name));
+                else if (e.isFile() && e.name.endsWith(".md")) {
+                  mdFiles.push(path.relative(inputDir, path.join(dir, e.name)));
+                }
+              }
+            };
+            walkMd(rootDir);
+            if (mdFiles.length === 0) return fmt("No .md files found.");
+
+            update(`distill: L${srcLevel} → L${nextLevel} (${mdFiles.length} files at ${ratio}%)`);
+            fs.mkdirSync(outputDir, { recursive: true });
+            for (let i = 0; i < mdFiles.length; i++) {
+              await processFile(mdFiles[i], inputDir, outputDir, nextLevel, ratio, cwd, toolCtx, i, mdFiles.length, logFile);
+            }
+            return fmt(`L${nextLevel} complete. ${mdFiles.length} files compressed from L${srcLevel}.`);
+          }
+        }
+
+        // Single file distillation
+        if (fs.statSync(rootDir).isFile()) {
+          const ext = path.extname(rootDir).toLowerCase();
+          if (!INCLUDE_EXTENSIONS.has(ext))
+            return fmt(`Unsupported file type: ${ext}`);
+          const parentDir = path.dirname(rootDir);
+          const relPath = path.basename(rootDir);
+          const content = fs.readFileSync(rootDir, "utf8");
+          const lines = content.split("\n").length;
+          const sizeKB = Math.round((fs.statSync(rootDir).size / 1024) * 10) / 10;
+
+          update(`distill: single file — ${relPath} (${lines} lines, ${sizeKB}KB)`);
+
+          const outputDir = path.join(dd, "L1");
+          const logFile = path.join(dd, "distill.log");
+          fs.mkdirSync(outputDir, { recursive: true });
+
+          await processFile(relPath, parentDir, outputDir, 1, ratio, cwd, toolCtx, 0, 1, logFile, purpose, dd);
+          return fmt(`Single file distilled: .think/distill/L1/${relPath}.md (${lines} lines → summary)`);
+        }
+
+        if (!fs.statSync(rootDir).isDirectory())
+          return fmt(`Invalid path: ${rootDir}`);
+
+        const files = crawl(rootDir, rootDir);
+        if (files.length === 0) return fmt("No source files found.");
+
+        const graph = buildImportGraph(files);
+        const topoOrder = topoSort(files, graph);
+        const orderedFiles = buildOrderedFileList(files, topoOrder);
+
+        if (orderedFiles.length >= CONFIRM_THRESHOLD && ctx?.ui?.select) {
+          const { breakdown, estimate } = buildBreakdown(files);
+          const choice = await ctx.ui.select(
+            `distill: Found ${orderedFiles.length} files\n${breakdown}\nEstimated time: ${estimate}\n\nProceed?`,
+            ["Yes, distill all", "Cancel"]
+          );
+          if (choice !== "Yes, distill all") {
+            return fmt(`Cancelled. Found ${orderedFiles.length} files:\n${breakdown}\n\nCall distill_codebase with a specific path to narrow scope.`);
+          }
+        }
+
+        fs.mkdirSync(dd, { recursive: true });
+        const manifest: Manifest = {
+          rootArg: targetArg,
+          rootDir,
+          purpose,
+          files: orderedFiles,
+          levels: {},
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        saveManifest(dd, manifest);
+
+        await distillLevel(1, ratio, manifest, dd, toolCtx);
+
+        let result = `L1 complete. ${orderedFiles.length} files summarized at ${ratio}% compression.\nSummaries: .think/distill/L1/\nUse explore_codebase to query.`;
+
+        if (purpose) {
+          const logFile = path.join(dd, "distill.log");
+          await runExpansion(purpose, dd, cwd, toolCtx, logFile, pi);
+          result += `\nPurpose-driven notes saved for: "${purpose}"`;
+        }
+
+        return fmt(result);
+        } catch (err: any) {
+          return fmt(`distill_codebase error: ${(err?.message || String(err)).slice(0, 500)}`);
+        }
+      },
+    });
+  } catch {}
 }
