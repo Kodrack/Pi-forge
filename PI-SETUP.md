@@ -47,7 +47,7 @@ This setup uses three layers, weakest to strongest:
 
 | Extension | What it guards | Trigger |
 |---|---|---|
-| `incremental-guard.ts` | write/edit tool call size | Rejects calls > 80 lines / 6000 chars |
+| `incremental-guard.ts` | write/edit tool call size | Rejects calls > 100 lines / 6000 chars |
 | `thinking-guard.ts` | reasoning/thinking block length | Injects correction if thinking > 2000 chars |
 | `context-monitor.ts` | context window fill | Steers model to write state at 65%, urgent at 80% |
 | `analysis-guard.ts` | long responses with no file write | Forces step file write after any analysis > 1000 chars |
@@ -59,7 +59,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 #### `incremental-guard.ts`
 - **Scope:** `write` and `edit` tool calls only
 - **Hook:** `tool_call` event — fires before the call executes
-- **Blocks:** write > 80 lines or 6000 chars; edit new_string > 80 lines or 6000 chars; edit old_string > 160 lines (whole-file-via-edit trick)
+- **Blocks:** write > 100 lines or 6000 chars; edit new_string > 100 lines or 6000 chars; edit old_string > 160 lines (whole-file-via-edit trick)
 - **Exempt:** lockfiles, `.svg`, `.lock` files (configurable)
 - **On block:** sends a structured error with exact replan instructions — model must split work and retry
 - **Command:** `/guard`
@@ -101,7 +101,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 #### `first-prompt.ts`
 - **Scope:** the very first user prompt of a session
 - **Hook:** `input` event — fires before the prompt reaches the LLM
-- **What it does:** appends `"Plan the implementation in numbered steps. Implement ONE step at a time and stop after each step."` to the first prompt only
+- **What it does:** appends `"Plan the implementation in numbered steps. Implement ONE step at a time ."` to the first prompt only
 - **Fires once:** `fired` flag prevents any effect on subsequent prompts
 - **Overhead:** zero — no steer message, no LLM call, no context cost
 - **Toggle:** `/piforge disable first-prompt` / `/piforge enable first-prompt`
@@ -288,7 +288,7 @@ mkdir -p ~/.pi/agent/skills/incremental-codegen
 ````markdown
 ---
 name: incremental-codegen
-description: Build or substantially modify any code file by working in small incremental steps — plan, skeleton, then ONE feature per turn — instead of writing the whole file in one large `write` call. Use whenever the user requests a new file, a feature, a UI, or a refactor that would otherwise produce more than ~80 lines of output in a single tool call.
+description: Build or substantially modify any code file by working in small incremental steps — plan, skeleton, then ONE feature per turn — instead of writing the whole file in one large `write` call. Use whenever the user requests a new file, a feature, a UI, or a refactor that would otherwise produce more than ~100 lines of output in a single tool call.
 ---
 
 # Incremental Code Generation
@@ -297,7 +297,7 @@ You are running on a local LLM with limited output coherence. Large single-shot 
 
 ## Hard rules
 
-1. **Never write more than ~80 lines of code in a single `write` or `edit` tool call.** If a file naturally needs more, split it across multiple calls.
+1. **Never write more than ~100 lines of code in a single `write` or `edit` tool call.** If a file naturally needs more, split it across multiple calls.
 2. **Never use `write` to rewrite an existing file.** Use `edit` for changes to anything that already exists on disk.
 3. **One feature per turn.** Stop after each feature so the user can verify before continuing.
 
@@ -314,7 +314,7 @@ For any non-trivial code task (new file, new component, multi-section UI, etc.),
 - Write a minimal scaffold of the file with empty/placeholder sections.
 - Mark each unfinished section with `<!-- TODO: <feature-name> -->` (or the language's comment syntax).
 - The skeleton must be valid syntax (parseable HTML / runnable JS / compilable code) but feature-empty.
-- Maximum ~80 lines. **Stop after this turn.**
+- Maximum ~100 lines. **Stop after this turn.**
 
 ### Phase 3 — Implement, ONE TODO per turn
 - Pick the next `TODO` from `_plan.md`.
@@ -371,13 +371,13 @@ You are a local LLM with limited output coherence. **Never produce a full multi-
 For any new file, new feature, UI, or refactor, follow this workflow:
 
 1. **Plan** — Write a numbered plan to `_plan.md`. Each item = one feature. STOP and show the user.
-2. **Skeleton** — Write a minimal scaffold with `<!-- TODO: name -->` markers for each feature. Max ~80 lines. STOP.
+2. **Skeleton** — Write a minimal scaffold with `<!-- TODO: name -->` markers for each feature. Max ~100 lines. STOP.
 3. **Implement** — One `edit` call per TODO. Do not implement two TODOs in one turn. STOP after each.
 4. **Validate** — Run a syntax check at the end.
 
 ## Hard limits
 
-- Max **~80 lines of code** in any single `write` or `edit` tool call.
+- Max **~100 lines of code** in any single `write` or `edit` tool call.
 - Use `write` only for new files. Use `edit` for everything else.
 - Stop after each phase. Wait for the user before proceeding.
 
@@ -567,7 +567,7 @@ export default function (pi: ExtensionAPI) {
 
 When blocked, the model receives this error as the tool result:
 
-> *"write rejected: 312 lines / 14820 chars exceeds limit (80 lines / 6000 chars). Do NOT retry with the same payload. Instead: (1) write a SHORT plan to _plan.md… (2) write a SKELETON file with empty `<!-- TODO: name -->` markers… (3) implement ONE TODO per turn using the 'edit' tool."*
+> *"write rejected: 312 lines / 14820 chars exceeds limit (100 lines / 6000 chars). Do NOT retry with the same payload. Instead: (1) write a SHORT plan to _plan.md… (2) write a SKELETON file with empty `<!-- TODO: name -->` markers… (3) implement ONE TODO per turn using the 'edit' tool."*
 
 The model's training to handle errors kicks in, it parses the message, and retries with a smaller call. **There is no way to win by ignoring the rule.**
 
@@ -769,7 +769,7 @@ Skipped: `.min.js`, `.bundle.js`, `.d.ts`, `.lock`, `.map`, `package-lock.json`,
 
 **Appended text:**
 ```
-Plan the implementation in numbered steps. Implement ONE step at a time and stop after each step.
+Plan the implementation in numbered steps. Implement ONE step at a time .
 ```
 
 **File: `~/.pi/agent/extensions/first-prompt.ts`**
@@ -989,7 +989,7 @@ These settings apply per-request (no model reload needed). Change them in LM Stu
    - Context: your `CLAUDE.md` (loaded automatically if present in project dir)
    - Extension notifications (all four):
      ```
-     incremental-guard active (max 80 lines / 6000 chars per write/edit)
+     incremental-guard active (max 100 lines / 6000 chars per write/edit)
      thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
      context-monitor active — warn at 65%, urgent at 80% (window: XXXXX tokens)
      analysis-guard active (triggers on responses >1000 chars with no file write)

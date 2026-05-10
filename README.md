@@ -10,15 +10,16 @@ Tested with `qwen3.6-35b-a3b` and `unsloth/Qwen3-30B-A3B` via LM Studio on macOS
 
 ## What's in the box
 
-### 7 hard-enforcement extensions (guards)
+### 8 hard-enforcement extensions (guards)
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects write/edit calls > 80 lines or 6000 chars — forces skeleton → edit workflow | on |
+| `incremental-guard.ts` | Rejects write/edit calls > 100 lines or 6000 chars — forces skeleton → edit workflow | on |
 | `thinking-guard.ts` | Injects correction when thinking block > 2000 chars — stops reasoning spirals | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, urgent at 80% | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
-| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to the first prompt only — preventive, zero context overhead | on |
+| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns | on |
+| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Hardcoded step 0: isolated LLM call selects relevant `~/.pi/knowledge/` files — selection reasoning never in context | **off** |
 
@@ -26,25 +27,40 @@ These are **hard** — the model cannot bypass them. `incremental-guard` and `kn
 
 `plan-clarify` and `knowledge-injector` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
 
-### Codebase distillation system (3 extensions)
+### Codebase distillation — zoom levels for local models
 
-A multi-level codebase knowledge builder. Crawls a directory, builds an import graph, topologically sorts files, and processes each file via isolated sub-Pi calls — the main session LLM stays idle and clean. Produces compressed summaries at multiple levels.
+A local model with 50k context can't hold a real codebase. Reading files one by one is slow, burns context, and the model forgets file #1 by the time it reads file #10. Distill solves this by building compressed versions of the entire codebase at multiple zoom levels — like Google Maps for your code.
+
+**The idea:** You distill your codebase once. This creates three levels of compressed summaries, all mirroring the original folder structure:
+
+```
+Source (100%)  →  L1 (~50%)  →  L2 (~25%)  →  L3 (~12%)
+full code         key logic     signatures     one-liners
+```
+
+When Pi needs to understand the codebase, it doesn't read source files. It queries the right zoom level:
+
+- **L3** — "What modules exist? What's the architecture?" — fits in a few hundred tokens
+- **L2** — "How does the auth system work?" — function signatures, key relationships
+- **L1** — "Show me the output pipeline logic" — detailed summaries with key code preserved
+
+Pi zooms in only when needed. Most questions are answered at L2/L3 without ever reading source. When Pi does need the actual code, it knows exactly which file to open because L2 already told it where things live.
+
+**How it works:** Crawls the directory, builds an import graph, topologically sorts files, and processes each file via isolated sub-Pi calls — the main session LLM stays idle and clean. The distilled knowledge persists across sessions.
 
 | Extension | What it does | Default |
 |---|---|---|
-| `distill-v2.ts` | `/distill` command + `distill_codebase` LLM-callable tool. Crawl → compress → multi-level summaries | on |
-| `explore.ts` | `/explore` command + `explore_codebase` LLM-callable tool. Navigate distilled knowledge to answer questions | on |
-| `distill-awareness.ts` | Session-start context injection. Tells Pi about available distilled data and tools. Notifies when reading a file that has a summary available | on |
+| `distill.ts` | `/distill` command + `distill_codebase` LLM-callable tool | on |
+| `distill-query.ts` | `/l1`, `/l2`, `/l3` query commands + `/distill-status` | on |
+| `explore.ts` | `/explore` + `explore_codebase` tool (superseded by distill-query) | **off** |
+| `distill-awareness.ts` | Session-start context injection (superseded by distill-query) | **off** |
 
-**Key features:**
-- **Multi-level compression**: L1 = ~50% of source, L2 = ~50% of L1, L3 = ~50% of L2. Same files, same folder structure, just smaller.
-- **LLM-callable tools**: Pi can autonomously call `distill_codebase` and `explore_codebase` — no slash commands needed.
-- **Purpose-driven notes**: `--purpose "how does auth work?"` extracts findings during distillation and runs an expansion pass.
-- **Single file support**: Distill one large file with automatic chunking.
-- **Auto-detect level**: Point at `.think/distill/L1/` and it auto-outputs L2.
-- **User confirmation**: Asks before distilling 30+ files, with folder breakdown and time estimate.
-- **Resume support**: `--resume` continues interrupted distillation.
-- **Timestamp headers**: Every distilled file has a creation timestamp.
+**Additional features:**
+- **Purpose-driven notes**: `--purpose "how does auth work?"` takes notes on each file during distillation, then synthesizes a comprehensive answer
+- **LLM-callable tool**: Pi can call `distill_codebase` autonomously — no slash command needed
+- **Single file support**: Distill one large file with automatic chunking
+- **Auto-detect level**: Point at `.think/distill/L1/` and it auto-outputs L2
+- **Resume support**: `--resume` continues interrupted distillation
 
 ```
 /distill [path]                        # distill directory (default: .)
@@ -52,7 +68,10 @@ A multi-level codebase knowledge builder. Crawls a directory, builds an import g
 /distill --resume                      # resume interrupted run
 /distill --level 2                     # compress L1 → L2
 /distill [path] --ratio 30            # aggressive compression (30%)
-/explore "how does auth work?"         # navigate distilled knowledge
+/l1 "how does auth work?"             # query L1 summaries directly
+/l2 "what modules exist?"             # query L2 summaries directly
+/l3 "high-level architecture?"        # query L3 summaries directly
+/distill-status                        # show coverage per level
 ```
 
 Output structure:
@@ -71,6 +90,20 @@ Output structure:
 │   └── auth-notes-answer.md
 └── tmp/               ← prompt files (auto-cleaned)
 ```
+
+### Purpose anchor (anti-drift after compaction)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `purpose-anchor.ts` | Captures session purpose from first prompt, re-injects purpose + state after compaction | on |
+
+When context gets compacted, Pi can lose track of the original goal. `purpose-anchor` solves this:
+1. Saves first user prompt to `.think/_purpose.md`
+2. Hooks into Pi's `session_compact` event
+3. After compaction, steers Pi to re-read `.think/_state.md` and `_summary.md`
+4. Pi re-orients and continues without drift
+
+Commands: `/purpose` (view/set), `/purpose-clear` (reset)
 
 ### 1 soft-enforcement skill
 
@@ -125,7 +158,7 @@ Then:
 
 On startup you should see:
 ```
-incremental-guard active (max 80 lines / 6000 chars per write/edit)
+incremental-guard active (max 100 lines / 6000 chars per write/edit)
 thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
 context-monitor active — warn at 65%, urgent at 80% (window: XXXXX tokens)
 analysis-guard active (triggers on responses >1000 chars with no file write)
@@ -211,8 +244,8 @@ piforge/
 ├── README.md
 ├── install.sh                          ← run this first
 ├── PI-SETUP.md                         ← full reference guide
-├── distill-v2-plan.md                  ← distill v2 design document
-├── distill-v2-implementation.md        ← distill v2 implementation spec
+├── distill-v2-plan.md                  ← distill design document
+├── distill-v2-implementation.md        ← distill implementation spec
 ├── extensions/
 │   ├── incremental-guard.ts            ← blocks oversized write/edit calls
 │   ├── thinking-guard.ts               ← stops reasoning spirals
@@ -222,11 +255,13 @@ piforge/
 │   ├── first-prompt.ts                 ← injects planning instruction into first prompt only
 │   ├── plan-clarify.ts                 ← clarifying questions after _plan.md (off by default)
 │   ├── knowledge-injector.ts           ← isolated LLM call selects knowledge files (off by default)
+│   ├── state-guard.ts                  ← blocks reads until _state.md read, forces updates
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
-│   ├── distill-v2.ts                   ← /distill + distill_codebase tool (deployed as distill.ts)
-│   ├── distill.ts                      ← legacy distill v1 (superseded by distill-v2.ts)
-│   ├── explore.ts                      ← /explore + explore_codebase tool
-│   └── distill-awareness.ts            ← session-start awareness + read notifications
+│   ├── distill.ts                      ← /distill + distill_codebase tool
+│   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
+│   ├── explore.ts                      ← /explore + explore_codebase tool (off by default)
+│   ├── distill-awareness.ts            ← session-start awareness (off by default)
+│   └── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
 ├── knowledge/
 │   ├── README.md                       ← how to write knowledge files
 │   ├── svelte5-gotchas.md              ← Svelte 5 runes failure patterns

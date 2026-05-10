@@ -16,25 +16,24 @@ const URGENT_PERCENT = 80;   // hard warning — session ending soon
 
 // ---------- STEERING MESSAGES ----------
 const WARN_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
-You are still coherent — use that now.
+Write your current progress to disk so compaction can safely compress earlier turns.
 
 ACTION REQUIRED before your next response:
 1. Write current task state to .think/_state.md (full, accurate, complete)
 2. Write a summary of all completed work to .think/_summary.md
-3. Log any key decisions to .think/_decisions.md
 
 Keep your response short. Prioritize the file writes.
-The goal: if this session ends right now, the next session must be able to pick up exactly where you left off using only the .think/ files.`;
+Then CONTINUE working normally. Compaction will free up space automatically.`;
 
-const URGENT_MESSAGE = `[context-monitor] URGENT: Context is at {PERCENT}% full. Quality will degrade soon.
+const URGENT_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
 
-STOP current work. Do this NOW:
+Write state to disk NOW, then compact:
 1. Write COMPLETE state to .think/_state.md — every detail, nothing from memory
 2. Write COMPLETE summary to .think/_summary.md
 3. Write next actions to .think/_state.md under "Next Action"
-4. Tell the user: "Context is nearly full. Please start a fresh Pi session and I will resume from .think/_state.md"
+4. Run /compact to free up context space
 
-Do not start new work. Only write state files and notify the user.`;
+Then CONTINUE working. Do NOT stop. Do NOT ask the user to start a new session.`;
 
 // ---------- HELPERS ----------
 function formatMessage(template: string, percent: number): string {

@@ -20,6 +20,12 @@ const TOGGLEABLE = [
   { name: "first-prompt",       description: "Appends 'plan in steps, implement one at a time' to first prompt" },
   { name: "knowledge-injector", description: "Isolated LLM call selects knowledge files before turn 1" },
   { name: "plan-clarify",       description: "Asks ≤3 clarifying questions after _plan.md is written" },
+  { name: "state-guard",        description: "Blocks source reads until _state.md read; forces updates every 3 turns" },
+  { name: "purpose-anchor",     description: "Captures session purpose, re-injects after compaction" },
+  { name: "distill",            description: "/distill command + distill_codebase tool" },
+  { name: "distill-query",      description: "/l1 /l2 /l3 direct level queries" },
+  { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
+  { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
 ];
 
 function readConfig(): { disabled: string[] } {

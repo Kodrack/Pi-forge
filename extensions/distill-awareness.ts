@@ -119,11 +119,12 @@ Completed levels: ${completedLevels.join(", ")}
 ${incompleteLevels.length > 0 ? `Incomplete: ${incompleteLevels.join(", ")} — use distill_codebase tool with resume=true` : ""}
 ${notesInfo}
 
-RULES FOR USING DISTILLED DATA:
-1. When the user asks a broad or architectural question, use the explore_codebase tool FIRST. Do NOT read source files individually.
-2. When you need to understand multiple files, read from .think/distill/${deepestLevel}/ FIRST. Only go to source for specific implementation detail.
-3. If distilled summaries exist at .think/distill/L1/<path>.md, read those instead of the source file.
-4. Only read source files directly when: (a) you need exact code for a specific edit, or (b) the L1 summary isn't detailed enough.
+HOW TO USE DISTILLED DATA:
+1. Always do your own research first — read source files, search, explore the codebase normally.
+2. AFTER you've formed your answer, cross-reference with .think/distill/${deepestLevel}/ to check if you missed anything. Distilled summaries cover every file in the project.
+3. If you notice gaps in your research (areas you didn't explore), read the distilled summaries for those areas at .think/distill/L1/<path>.md
+4. For broad architectural questions, skim distilled summaries to get the full picture after your initial research.
+5. Always prefer source files for specific code, edits, or implementation detail — distilled data may be outdated.
 
 AVAILABLE TOOLS:
 - distill_codebase — create/resume distillation (also available as /distill command)

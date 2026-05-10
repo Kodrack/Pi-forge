@@ -14,6 +14,18 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+
+const PIFORGE_CONFIG = path.join(os.homedir(), ".pi", "piforge.json");
+
+function isEnabled(): boolean {
+  try {
+    const config = JSON.parse(fs.readFileSync(PIFORGE_CONFIG, "utf-8"));
+    return !(config.disabled ?? []).includes("explore");
+  } catch {
+    return true;
+  }
+}
 
 interface Manifest {
   rootArg: string;
@@ -26,6 +38,8 @@ interface Manifest {
 }
 
 export default function (pi: ExtensionAPI) {
+  if (!isEnabled()) return;
+
   pi.registerCommand("explore", {
     description: 'Navigate distilled codebase knowledge. Usage: /explore "your question"',
     handler: async (args: any, ctx: any) => {

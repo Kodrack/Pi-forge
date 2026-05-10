@@ -29,22 +29,10 @@ mkdir -p "$PI_DIR/skills/incremental-codegen"
 echo "✓ ~/.pi/agent directories ready"
 
 # ---------- 3. Copy extensions ----------
-# distill-v2.ts is the active version — deploy it as distill.ts
-# distill.ts (v1) stays in the repo for reference but is NOT deployed
 for f in "$PIFORGE_DIR/extensions/"*.ts; do
   base="$(basename "$f")"
-  # Skip legacy distill v1
-  if [ "$base" = "distill.ts" ]; then
-    continue
-  fi
-  # Deploy distill-v2.ts as distill.ts
-  if [ "$base" = "distill-v2.ts" ]; then
-    cp "$f" "$PI_DIR/extensions/distill.ts"
-    echo "    ~/.pi/agent/extensions/distill.ts (from distill-v2.ts)"
-  else
-    cp "$f" "$PI_DIR/extensions/$base"
-    echo "    ~/.pi/agent/extensions/$base"
-  fi
+  cp "$f" "$PI_DIR/extensions/$base"
+  echo "    ~/.pi/agent/extensions/$base"
 done
 echo "✓ Extensions installed"
 
@@ -67,7 +55,7 @@ echo "✓ Skill installed: incremental-codegen"
 #                 keepRecentTokens=28000, reserveTokens=8192
 # piforge.json — extension toggles (knowledge-injector, plan-clarify disabled by default)
 cp "$PIFORGE_DIR/config/piforge.json" "$HOME/.pi/piforge.json"
-echo "✓ piforge.json installed (knowledge-injector + plan-clarify disabled by default)"
+echo "✓ piforge.json installed (knowledge-injector, plan-clarify, explore, distill-awareness disabled by default)"
 
 for file in models.json settings.json; do
   src="$PIFORGE_DIR/config/$file"
@@ -104,9 +92,15 @@ echo "    incremental-guard active (max 80 lines / 6000 chars per write/edit)"
 echo "    thinking-guard active (max 2000 chars / 60 lines of thinking per turn)"
 echo "    context-monitor active — warn at 65%, urgent at 80%"
 echo "    analysis-guard active (triggers on responses >1000 chars with no file write)"
+echo "    state-guard active — will enforce _state.md read before source files"
+echo "    purpose-anchor active — will capture session purpose from first prompt"
+echo "    distill levels: L1 N/N (%) | L2 ... (if distilled data exists)"
 echo ""
 echo "  Commands:"
 echo "    /distill [path]              — build codebase knowledge base"
-echo "    /explore \"question\"           — navigate distilled knowledge"
-echo "  Pi can also call distill_codebase and explore_codebase as tools autonomously."
+echo "    /l1 /l2 /l3 \"question\"       — query specific distill level"
+echo "    /distill-status              — show distill coverage per level"
+echo "    /purpose                     — view/set session purpose"
+echo "    /purpose-clear               — reset session purpose"
+echo "  Pi can also call distill_codebase as a tool autonomously."
 echo ""

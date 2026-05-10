@@ -12,7 +12,7 @@ import * as path from "path";
 import * as os from "os";
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
-const APPEND = "\n\nPlan the implementation in numbered steps. Implement ONE step at a time and stop after each step.";
+const APPEND = "\n\nPlan the implementation in numbered steps. Implement ONE step at a time.";
 
 function isEnabled(): boolean {
   try {

@@ -12,8 +12,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 
 // ---------- LIMITS (tune these as needed) ----------
-const MAX_LINES_PER_WRITE = 80;       // skeleton scaffold cap
-const MAX_LINES_PER_EDIT  = 80;       // single-feature edit cap
+const MAX_LINES_PER_WRITE = 100;      // skeleton scaffold cap
+const MAX_LINES_PER_EDIT  = 100;      // single-feature edit cap
 const MAX_CHARS_PER_CALL  = 6000;     // ~1500 tokens, regardless of line count
 
 // Files exempt from the cap (config files, lockfiles, etc. that legitimately
