@@ -4,7 +4,7 @@
 
 Local models (35B and under) spiral, forget, and write 800-line files in one shot. PiForge physically prevents that — at the API boundary, not the prompt level — and gives the model an external brain via `.think/` files that survive context compression.
 
-Tested with `qwen3.6-35b-a3b` and `unsloth/Qwen3-30B-A3B` via LM Studio on macOS.
+Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS. Yes — a 2-bit quantized model doing structured multi-file coding, codebase distillation, and tool-call workflows. The guard stack makes that possible.
 
 ---
 
@@ -172,9 +172,11 @@ analysis-guard active (triggers on responses >1000 chars with no file write)
 - [LM Studio](https://lmstudio.ai) with a model loaded and server running on `:1234`
 - Node.js ≥ 20
 
-**Recommended model:** [unsloth/Qwen3-35B-MoE](https://huggingface.co/unsloth) (Unsloth quantized, runs well at 4-bit on consumer hardware)
+**Recommended model:** `qwen3.6-35b-a3b` at Q2_K_XL quantization (Unsloth). Runs on consumer hardware via LM Studio.
 
-Also tested with `qwen3.6-35b-a3b` and `qwen3-coder-30b-a3b-instruct`. Should work with any OpenAI-compatible local server.
+> We develop and test PiForge at **Q2_K_XL** — the most aggressive quantization level. The results at 2-bit are already surprisingly good. At higher quantizations, they only get better.
+
+Also tested with `qwen3-coder-30b-a3b-instruct`. Should work with any OpenAI-compatible local server.
 
 ---
 
