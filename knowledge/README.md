@@ -32,4 +32,4 @@ Copy this folder's contents to `~/.pi/knowledge/`:
 cp knowledge/*.md ~/.pi/knowledge/
 ```
 
-The `CLAUDE.md` workflow handles the rest automatically.
+The `AGENTS.md` workflow handles the rest automatically.

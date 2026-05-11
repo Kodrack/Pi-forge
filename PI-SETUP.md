@@ -15,7 +15,7 @@ Tested on macOS (zsh) with Node 24, npm 11, Pi 0.73.0.
 4. [Configure LM Studio as a provider](#4-configure-lm-studio-as-a-provider)
 5. [Set Pi defaults](#5-set-pi-defaults)
 6. [Install the incremental-codegen skill (soft enforcement)](#6-install-the-incremental-codegen-skill-soft-enforcement)
-7. [Per-project AGENTS.md / CLAUDE.md template](#7-per-project-agentsmd--claudemd-template)
+7. [Per-project AGENTS.md template](#7-per-project-agentsmd-template)
 8. [Install the incremental-guard extension (HARD: write/edit size)](#8-install-the-incremental-guard-extension-hard-writeedit-size)
 9. [Install the thinking-guard extension (HARD: reasoning length)](#9-install-the-thinking-guard-extension-hard-reasoning-length)
 10. [Install the context-monitor extension (HARD: context fill)](#10-install-the-context-monitor-extension-hard-context-fill)
@@ -40,7 +40,7 @@ This setup uses three layers, weakest to strongest:
 | Layer | What | Reliability with local 35B |
 |---|---|---|
 | **Soft (skill)** | `incremental-codegen` SKILL.md tells the model the workflow | ~50–70% — model usually follows |
-| **Soft (project)** | `CLAUDE.md` / `AGENTS.md` reinforces rules per-project | adds another ~10–15% |
+| **Soft (project)** | `AGENTS.md` reinforces rules per-project | adds another ~10–15% |
 | **HARD (extensions)** | Four guards enforce behavior at runtime — model cannot bypass | ~99% per guard |
 
 ### The four hard-enforcement extensions
@@ -986,7 +986,7 @@ These settings apply per-request (no model reload needed). Change them in LM Stu
    - Provider: `lmstudio`
    - Model: `qwen3.6-35b-a3b`
    - Skills: `incremental-codegen`
-   - Context: your `CLAUDE.md` (loaded automatically if present in project dir)
+   - Context: your `AGENTS.md` (loaded automatically if present in project dir)
    - Extension notifications (all four):
      ```
      incremental-guard active (max 100 lines / 6000 chars per write/edit)
@@ -1143,9 +1143,9 @@ On a fresh machine, in order:
 - [ ] No skill warnings, no extension errors
 - [ ] `/skills`, `/guard`, `/thinking-guard`, `/context-monitor`, `/analysis-guard`, `/piforge` all respond
 - [ ] LM Studio inference: `max_tokens` ≤ 1000, `repetition_penalty` 1.1, `temperature` 0.4
-- [ ] Drop `CLAUDE.md` into each project that should follow the workflow
+- [ ] Drop `AGENTS.md` into each project that should follow the workflow
 
-That's the whole setup. No shell-level env vars, no proxies — just these files in `~/.pi/` plus a `CLAUDE.md` per project:
+That's the whole setup. No shell-level env vars, no proxies — just these files in `~/.pi/` plus an `AGENTS.md` per project:
 
 ```
 ~/.pi/

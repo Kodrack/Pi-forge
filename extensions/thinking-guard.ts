@@ -16,7 +16,7 @@ const MAX_THINKING_CHARS = 2000;  // ~500 tokens — enough to reason, not enoug
 const MAX_THINKING_LINES = 60;    // secondary line-count check
 
 // The correction message injected as a steering message after a long thinking block.
-// Mirrors the .think/ workflow from CLAUDE.md so the model knows exactly what to do.
+// Mirrors the .think/ workflow from AGENTS.md so the model knows exactly what to do.
 const CORRECTION_MESSAGE = `[thinking-guard] Your thinking block was too long — you are overthinking.
 STOP the current reasoning chain immediately.
 
