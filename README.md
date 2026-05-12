@@ -21,7 +21,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns | on |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
-| `knowledge-injector.ts` | Hardcoded step 0: isolated LLM call selects relevant `~/.pi/knowledge/` files — selection reasoning never in context | **off** |
+| `knowledge-injector.ts` | Isolated LLM call selects relevant `~/.pi/knowledge/` files, saves manifest, auto re-injects after compaction. `/forget` to remove. | **off** |
 
 These are **hard** — the model cannot bypass them. `incremental-guard` and `knowledge-injector` physically reject tool calls. The others inject steering messages before the next LLM call.
 
@@ -140,6 +140,8 @@ This means: smart semantic selection (the LLM knows the task), zero reasoning tr
 ```
 user prompt → isolated call → selects files → injects content only → Pi's main LLM call
 ```
+
+Selected filenames are saved to `.think/_knowledge-manifest.md`. After compaction or session restart, the extension reads the manifest, rebuilds the content from source files, and re-injects automatically — zero LLM cost, no re-selection needed. Use `/forget <name>` to remove knowledge mid-session.
 
 Code writes are blocked until `.think/_knowledge.md` is written — proof the model absorbed the knowledge.
 

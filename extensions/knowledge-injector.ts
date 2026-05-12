@@ -1,18 +1,24 @@
 // knowledge-injector.ts
-// Hardcoded step 0: makes an isolated LLM call (using Pi's own model + endpoint)
-// to select relevant knowledge files based on the user's prompt. The selection
-// reasoning never touches Pi's conversation context — only the selected file
-// content is injected as a steer. Code writes are blocked until the model writes
-// .think/_knowledge.md proving it absorbed the knowledge.
+// Inference-time knowledge injection with compaction survival.
 //
-// Flow:
-//   user submits prompt → input event captures it
-//   turn_start fires (before Pi's LLM call)
-//   → isolated fetch() to Pi's model/endpoint: "which files are relevant?"
-//   → fetch completes, Pi's LLM call has NOT started yet (sequential)
-//   → only selected file content injected as steer — no selection reasoning in context
-//   → Pi makes its main LLM call with knowledge already in context
-//   → code writes blocked until .think/_knowledge.md written
+// Session start (turn 1):
+//   1. Isolated LLM call selects relevant files from ~/.pi/knowledge/
+//   2. Saves selected filenames to .think/_knowledge-manifest.md (manifest)
+//   3. Builds .think/_knowledge.md from source files (full content)
+//   4. Injects content as steer — model gets knowledge on first LLM call
+//   5. Blocks code writes until .think/_knowledge.md is read by model
+//
+// After compaction (session_compact):
+//   1. Reads manifest (.think/_knowledge-manifest.md)
+//   2. Rebuilds .think/_knowledge.md from source files
+//   3. Injects content as steer — model gets knowledge back automatically
+//   Zero LLM cost — fully programmatic rebuild.
+//
+// The manifest on disk is the source of truth. It survives compaction,
+// session restarts, and context loss. The full content is always rebuilt
+// fresh from ~/.pi/knowledge/ source files.
+//
+// Commands: /forget <name> — remove a knowledge file from the active set
 //
 // Install: copy to ~/.pi/agent/extensions/knowledge-injector.ts
 
@@ -24,6 +30,8 @@ import * as os from "os";
 const KNOWLEDGE_DIR = path.join(os.homedir(), ".pi", "knowledge");
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
 
+// ---------- HELPERS ----------
+
 function isEnabled(): boolean {
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
@@ -33,19 +41,93 @@ function isEnabled(): boolean {
   }
 }
 
-function listKnowledgeFiles(): Array<{ filePath: string; name: string }> {
-  if (!fs.existsSync(KNOWLEDGE_DIR)) return [];
+function thinkDir(): string {
+  return path.join(process.cwd(), ".think");
+}
+
+function manifestPath(): string {
+  return path.join(thinkDir(), "_knowledge-manifest.md");
+}
+
+function contentPath(): string {
+  return path.join(thinkDir(), "_knowledge.md");
+}
+
+function ensureThinkDir(): void {
+  const dir = thinkDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function readManifest(): string[] {
   try {
-    return fs.readdirSync(KNOWLEDGE_DIR)
-      .filter(f => f.endsWith(".md") && f !== "README.md")
-      .map(f => ({ filePath: path.join(KNOWLEDGE_DIR, f), name: f }));
+    const content = fs.readFileSync(manifestPath(), "utf-8");
+    return content
+      .split("\n")
+      .filter((line) => line.startsWith("- "))
+      .map((line) => line.slice(2).trim());
   } catch {
     return [];
   }
 }
 
-function knowledgeDone(projectDir: string): boolean {
-  return fs.existsSync(path.join(projectDir, ".think", "_knowledge.md"));
+function writeManifest(active: string[]): void {
+  ensureThinkDir();
+  const md = `# Active Knowledge\n${active.map((n) => `- ${n}`).join("\n")}\n`;
+  fs.writeFileSync(manifestPath(), md);
+}
+
+function listKnowledgeFiles(): Array<{ filePath: string; name: string }> {
+  if (!fs.existsSync(KNOWLEDGE_DIR)) return [];
+  try {
+    return fs
+      .readdirSync(KNOWLEDGE_DIR)
+      .filter((f) => f.endsWith(".md") && f !== "README.md")
+      .map((f) => ({ filePath: path.join(KNOWLEDGE_DIR, f), name: f }));
+  } catch {
+    return [];
+  }
+}
+
+// Rebuild _knowledge.md from manifest + source files. Returns loaded names.
+function rebuildContent(): string[] {
+  const active = readManifest();
+  if (active.length === 0) {
+    try { fs.unlinkSync(contentPath()); } catch {}
+    return [];
+  }
+
+  ensureThinkDir();
+  const sections: string[] = [];
+  const loaded: string[] = [];
+
+  for (const name of active) {
+    const fileName = name.endsWith(".md") ? name : `${name}.md`;
+    const filePath = path.join(KNOWLEDGE_DIR, fileName);
+    try {
+      const content = fs.readFileSync(filePath, "utf-8").trim();
+      const id = fileName.replace(".md", "");
+      sections.push(`## ${id}\n\n${content}`);
+      loaded.push(id);
+    } catch {}
+  }
+
+  if (sections.length > 0) {
+    fs.writeFileSync(contentPath(), `# Active Knowledge\n\n${sections.join("\n\n---\n\n")}\n`);
+  } else {
+    try { fs.unlinkSync(contentPath()); } catch {}
+  }
+
+  if (loaded.length !== active.length) writeManifest(loaded);
+  return loaded;
+}
+
+// Build the steer content from _knowledge.md
+function buildSteerContent(): string {
+  try {
+    return fs.readFileSync(contentPath(), "utf-8").trim();
+  } catch {
+    return "";
+  }
 }
 
 async function selectRelevantFiles(
@@ -54,6 +136,7 @@ async function selectRelevantFiles(
   userPrompt: string,
   files: Array<{ name: string }>
 ): Promise<string[]> {
+  if (files.length === 0) return [];
   const fileList = files.map((f, i) => `${i + 1}. ${f.name}`).join("\n");
 
   try {
@@ -84,104 +167,144 @@ If none are relevant, reply: none`,
     if (!res.ok) return [];
     const data = (await res.json()) as any;
     const reply: string = data?.choices?.[0]?.message?.content ?? "";
-
     if (reply.trim().toLowerCase() === "none") return [];
 
     return files
-      .filter(f => reply.toLowerCase().includes(f.name.toLowerCase().replace(".md", "")))
-      .map(f => f.name);
+      .filter((f) => reply.toLowerCase().includes(f.name.toLowerCase().replace(".md", "")))
+      .map((f) => f.name);
   } catch {
     return [];
   }
 }
 
+function getModelConfig(pi: ExtensionAPI, ctx: any): { baseUrl: string; modelId: string } {
+  let baseUrl = "http://localhost:1234/v1";
+  let modelId = "";
+  try {
+    const model = (ctx as any).getModel?.() ?? (pi as any).getModel?.();
+    if (model) {
+      baseUrl = model.baseUrl ?? baseUrl;
+      modelId = model.id ?? modelId;
+    }
+  } catch {}
+  return { baseUrl, modelId };
+}
+
+// ---------- EXTENSION ----------
 export default function (pi: ExtensionAPI) {
   let firstTurnHandled = false;
-  let scanDone = false;
   let lastUserPrompt = "";
-  let hasFiles = false;
+  let knowledgeAcknowledged = false;
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (_event: any, ctx: any) => {
     if (!isEnabled()) {
-      ctx.ui.notify("knowledge-injector disabled (use /piforge enable knowledge-injector to activate)", "info");
+      ctx.ui.notify("knowledge-injector disabled (use /piforge enable knowledge-injector)", "info");
       return;
     }
-    hasFiles = listKnowledgeFiles().length > 0;
-    if (hasFiles) {
-      ctx.ui.notify("knowledge-injector active — isolated LLM call will select relevant files before turn 1", "info");
+
+    const active = readManifest();
+    if (active.length > 0) {
+      const loaded = rebuildContent();
+      ctx.ui.notify(`knowledge-injector active — restored: ${loaded.join(", ")}`, "info");
+    } else {
+      const files = listKnowledgeFiles();
+      ctx.ui.notify(
+        files.length > 0
+          ? `knowledge-injector active — ${files.length} knowledge files available`
+          : "knowledge-injector active — no files in ~/.pi/knowledge/",
+        "info"
+      );
     }
   });
 
-  // capture user prompt before turn_start fires
-  pi.on("input", (event) => {
-    lastUserPrompt = (event as any).text ?? "";
+  pi.on("input", (event: any) => {
+    lastUserPrompt = event.text ?? "";
   });
 
-  pi.on("turn_start", async (_event, ctx) => {
-    if (!isEnabled() || firstTurnHandled || !hasFiles) return;
+  // First turn: select + inject
+  pi.on("turn_start", async (_event: any, ctx: any) => {
+    if (!isEnabled() || firstTurnHandled) return;
     firstTurnHandled = true;
 
-    if (knowledgeDone(process.cwd())) {
-      scanDone = true;
+    const active = readManifest();
+
+    // Resuming with existing manifest — inject directly
+    if (active.length > 0) {
+      const content = buildSteerContent();
+      if (content) {
+        await pi.sendMessage(
+          {
+            customType: "knowledge_inject",
+            content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
+            display: { label: "knowledge-injector", content: `Restored: ${active.join(", ")}` },
+          },
+          { deliverAs: "steer" }
+        );
+      }
       return;
     }
 
+    // Fresh session — isolated LLM call to select
     const files = listKnowledgeFiles();
     if (files.length === 0) return;
 
-    // get Pi's current model and endpoint — fall back to LM Studio defaults
-    let baseUrl = "http://localhost:1234/v1";
-    let modelId = "";
-    try {
-      const model = (ctx as any).getModel?.() ?? (pi as any).getModel?.();
-      if (model) {
-        baseUrl = model.baseUrl ?? baseUrl;
-        modelId = model.id ?? modelId;
-      }
-    } catch {
-      // use defaults — LM Studio ignores model id and uses the loaded model
-    }
-
+    const { baseUrl, modelId } = getModelConfig(pi, ctx);
     ctx.ui.notify(`knowledge-injector: selecting from ${files.length} files via isolated call...`, "info");
 
     const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files);
-
     if (selected.length === 0) {
-      ctx.ui.notify(`knowledge-injector: isolated call returned no relevant files (checked: ${files.map(f => f.name).join(", ")})`, "info");
-      scanDone = true;
+      ctx.ui.notify("knowledge-injector: no relevant files for this task", "info");
+      knowledgeAcknowledged = true;
       return;
     }
 
-    ctx.ui.notify(`knowledge-injector: isolated call selected → ${selected.join(", ")}`, "info");
+    // Save to manifest + build content
+    writeManifest(selected.map((n) => n.replace(".md", "")));
+    const loaded = rebuildContent();
+    const content = buildSteerContent();
 
-    // read and inject only the content — selection reasoning stays out of context
-    const sections: string[] = [];
-    for (const name of selected) {
-      const filePath = path.join(KNOWLEDGE_DIR, name);
-      try {
-        const content = fs.readFileSync(filePath, "utf-8").trim();
-        sections.push(`### ${name.replace(".md", "")}\n\n${content}`);
-        ctx.ui.notify(`knowledge-injector: loaded ${name}`, "info");
-      } catch {}
+    ctx.ui.notify(`knowledge-injector: selected → ${loaded.join(", ")}`, "info");
+
+    if (content) {
+      await pi.sendMessage(
+        {
+          customType: "knowledge_inject",
+          content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
+          display: { label: "knowledge-injector", content: `Loaded: ${loaded.join(", ")}` },
+        },
+        { deliverAs: "steer" }
+      );
     }
+  });
 
-    if (sections.length === 0) return;
+  // After compaction: rebuild from manifest and re-inject
+  pi.on("session_compact", async (_event: any, ctx: any) => {
+    if (!isEnabled()) return;
+
+    const active = readManifest();
+    if (active.length === 0) return;
+
+    const loaded = rebuildContent();
+    if (loaded.length === 0) return;
+
+    const content = buildSteerContent();
+    if (!content) return;
+
+    ctx.ui.notify(`knowledge-injector: re-injecting after compaction — ${loaded.join(", ")}`, "info");
 
     await pi.sendMessage(
       {
-        customType: "knowledge_inject",
-        content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${sections.join("\n\n---\n\n")}\n\nApply these. Write .think/_knowledge.md with the key points before writing any code.`,
-        display: {
-          label: "knowledge-injector",
-          content: `Loaded: ${selected.join(", ")} — selected via isolated LLM call`,
-        },
+        customType: "knowledge_reinject",
+        content: `[knowledge-injector] Context was compacted. Re-injecting knowledge:\n\n${content}\n\nThis knowledge was selected at session start and is still active. Continue applying these patterns.`,
+        display: { label: "knowledge-injector", content: `Re-injected: ${loaded.join(", ")}` },
       },
       { deliverAs: "steer" }
     );
   });
 
-  pi.on("tool_call", async (event, ctx) => {
-    if (!isEnabled() || !hasFiles || scanDone) return;
+  // Block code writes until model acknowledges knowledge
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    if (!isEnabled() || knowledgeAcknowledged) return;
 
     const name = (event as any).toolName ?? "";
     if (name !== "write" && name !== "edit") return;
@@ -189,35 +312,72 @@ export default function (pi: ExtensionAPI) {
     const input = (event as any).input as { path?: string; file_path?: string };
     const filePath = input?.path ?? input?.file_path ?? "";
 
-    if (filePath.includes(".think/") || filePath.includes(".think\\")) return;
+    // Allow .think/ writes
+    if (filePath.includes(".think/") || filePath.includes(".think\\")) {
+      // Check if this is the acknowledgment write
+      if (filePath.includes("_knowledge")) {
+        knowledgeAcknowledged = true;
+      }
+      return;
+    }
 
-    if (knowledgeDone(process.cwd())) {
-      scanDone = true;
+    // No manifest = no knowledge to acknowledge
+    if (readManifest().length === 0) {
+      knowledgeAcknowledged = true;
       return;
     }
 
     (ctx as any).blockToolCall(
-      "[knowledge-injector] Write .think/_knowledge.md with the key patterns from the loaded knowledge files before writing any code."
+      "[knowledge-injector] Write .think/_knowledge.md acknowledging the loaded knowledge patterns before writing any code."
     );
   });
 
-  pi.on("turn_end", async (_event, ctx) => {
-    if (!hasFiles || scanDone) return;
-    if (knowledgeDone(process.cwd())) {
-      scanDone = true;
-      ctx.ui.notify("knowledge-injector: _knowledge.md written — code writes unblocked", "info");
+  pi.on("turn_end", async () => {
+    if (knowledgeAcknowledged) return;
+    if (fs.existsSync(path.join(thinkDir(), "_knowledge.md"))) {
+      knowledgeAcknowledged = true;
     }
   });
 
-  pi.registerCommand("knowledge", {
-    description: "Show knowledge files and step 0 status",
-    handler: async (_args, ctx) => {
-      const files = listKnowledgeFiles();
-      const done = knowledgeDone(process.cwd());
-      ctx.ui.notify(
-        `knowledge-injector: ${files.length} files | step 0: ${done ? "complete" : "pending"}\n` +
-          files.map(f => `  ${f.name}`).join("\n"),
-        "info"
+  // /forget — remove a knowledge file from active set
+  pi.registerCommand("forget", {
+    description: "Remove knowledge. Usage: /forget playwright-testing",
+    handler: async (args: string, ctx: any) => {
+      const name = (args ?? "").trim().replace(".md", "");
+      if (!name) {
+        const active = readManifest();
+        ctx.ui.notify(
+          active.length > 0
+            ? `Active knowledge: ${active.join(", ")}\nUsage: /forget <name>`
+            : "No active knowledge.",
+          "info"
+        );
+        return;
+      }
+
+      const active = readManifest();
+      const idx = active.indexOf(name);
+      if (idx === -1) {
+        ctx.ui.notify(`"${name}" not active. Current: ${active.join(", ") || "none"}`, "warn");
+        return;
+      }
+
+      active.splice(idx, 1);
+      writeManifest(active);
+      const loaded = rebuildContent();
+      ctx.ui.notify(`knowledge-injector: removed "${name}"`, "info");
+
+      const msg = loaded.length > 0
+        ? `Removed "${name}". Remaining: ${loaded.join(", ")}.`
+        : `Removed "${name}". No active knowledge remaining.`;
+
+      await pi.sendMessage(
+        {
+          customType: "knowledge_forget",
+          content: `[knowledge-injector] ${msg}`,
+          display: { label: "knowledge-injector", content: `Removed: ${name}` },
+        },
+        { deliverAs: "steer" }
       );
     },
   });

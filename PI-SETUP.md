@@ -109,11 +109,11 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **Default:** enabled
 
 #### `knowledge-injector.ts`
-- **Scope:** turn 1 of every session where relevant knowledge files exist
-- **Hook:** `input` (captures prompt) + `turn_start` (fires isolated LLM call before Pi's main call)
-- **What it does:** makes an isolated `fetch()` to Pi's own model/endpoint, asks it which files in `~/.pi/knowledge/` are relevant to the user's task, injects only the selected file content as a steer — selection reasoning never enters Pi's context
+- **Scope:** turn 1 of every session + after compaction/restart
+- **Hook:** `input` (captures prompt) + `turn_start` (fires isolated LLM call before Pi's main call) + `session_compact` (re-injects from manifest)
+- **What it does:** makes an isolated `fetch()` to Pi's own model/endpoint, asks it which files in `~/.pi/knowledge/` are relevant to the user's task, injects only the selected file content as a steer — selection reasoning never enters Pi's context. Saves selected filenames to `.think/_knowledge-manifest.md`. After compaction or restart, reads the manifest and re-injects from source files — no re-selection needed.
 - **Blocks:** code writes (`write`/`edit`) until `.think/_knowledge.md` is created — proof the model processed the injected knowledge
-- **Knowledge file naming:** `<tech>-gotchas.md` style — LLM matches filenames to task keywords
+- **Commands:** `/forget <name>` removes from manifest; `/forget` lists active knowledge
 - **Toggle:** `/piforge enable knowledge-injector` / `/piforge disable knowledge-injector`
 - **Default:** disabled (enable per session when working with a tech that has knowledge files)
 
@@ -860,6 +860,25 @@ Disabled by default. Enable per session when working with a tech that has knowle
 
 Then `/reload` to apply, or start a new Pi session.
 
+### Compaction survival
+
+When context gets compacted, the injected knowledge is lost from conversation history. But the manifest (`.think/_knowledge-manifest.md`) survives on disk. On `session_compact`, the extension:
+
+1. Reads the manifest (list of active knowledge filenames)
+2. Rebuilds `.think/_knowledge.md` from the source files in `~/.pi/knowledge/`
+3. Re-injects the full content as a steer
+
+This is fully programmatic — zero LLM cost. The model gets its knowledge back automatically after every compaction.
+
+### `/forget` command
+
+Remove a knowledge file from the active set mid-session:
+
+```
+/forget playwright-testing    — removes from manifest, steers model
+/forget                       — shows currently active knowledge
+```
+
 ---
 
 ## 15. Install plan-clarify extension (clarifying questions)
@@ -1115,6 +1134,8 @@ Three real-world prompts tested after full stack was operational:
 | `/sessions` | List all `.think/` sessions with task + last-active date |
 | `/resume` | List sessions and pick one to resume |
 | `/resume <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |
+| `/forget <name>` | Remove a knowledge file from active set (e.g., `/forget playwright-testing`) |
+| `/forget` | List currently active knowledge files |
 | `/reload` | Hot-reload extensions / skills / settings (no need to quit) |
 | `/usage` | Show tokens per turn — verify calls stay small |
 | `/tree` | Show full event tree (tool calls, thinking, results) |
