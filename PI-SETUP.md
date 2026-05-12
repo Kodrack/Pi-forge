@@ -25,11 +25,12 @@ Tested on macOS (zsh) with Node 24, npm 11, Pi 0.73.0.
 14. [Install knowledge-injector extension (inference-time context)](#14-install-knowledge-injector-extension-inference-time-context)
 15. [Install plan-clarify extension (clarifying questions)](#15-install-plan-clarify-extension-clarifying-questions)
 16. [Install piforge-manager extension (toggle system)](#16-install-piforge-manager-extension-toggle-system)
-17. [LM Studio inference settings](#17-lm-studio-inference-settings)
-18. [First run + verification](#18-first-run--verification)
-19. [Useful slash commands inside Pi](#19-useful-slash-commands-inside-pi)
-20. [Troubleshooting](#20-troubleshooting)
-21. [Replication checklist](#21-replication-checklist)
+17. [Install session-manager extension (per-tab .think/ isolation)](#17-install-session-manager-extension-per-tab-think-isolation)
+18. [LM Studio inference settings](#18-lm-studio-inference-settings)
+19. [First run + verification](#19-first-run--verification)
+20. [Useful slash commands inside Pi](#20-useful-slash-commands-inside-pi)
+21. [Troubleshooting](#21-troubleshooting)
+22. [Replication checklist](#22-replication-checklist)
 
 ---
 
@@ -130,6 +131,13 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **What it does:** provides `/piforge` command to list and toggle extensions; reads/writes `~/.pi/piforge.json`
 - **Command:** `/piforge` (status), `/piforge enable <name>`, `/piforge disable <name>`
 - **Toggleable extensions:** `first-prompt`, `knowledge-injector`, `plan-clarify`
+
+#### `session-manager.ts`
+- **Scope:** `.think/` directory isolation per Pi terminal instance
+- **Hook:** `session_start` (creates new session, updates symlink)
+- **What it does:** each new Pi terminal gets its own `.think/` directory via symlinks under `.think-sessions/`. The model always writes to `.think/` — same hardcoded path, zero overhead. Supports `/resume` to switch between sessions and `/sessions` to list them.
+- **Commands:** `/sessions` (list all), `/resume` (list + pick), `/resume <id>` (switch directly)
+- **Migration:** if `.think/` exists as a real directory, it's moved to `.think-sessions/session-001/` automatically
 
 ---
 
@@ -960,7 +968,52 @@ piforge: disabled → knowledge-injector, plan-clarify (use /piforge to manage)
 
 ---
 
-## 17. LM Studio inference settings
+## 17. Install session-manager extension (per-tab `.think/` isolation)
+
+Every new Pi terminal gets its own `.think/` directory automatically. The model always writes to `.think/` — same hardcoded path, zero overhead. A symlink swaps what `.think/` points to behind the scenes.
+
+**File: `~/.pi/agent/extensions/session-manager.ts`**
+
+```bash
+cp $(pwd)/extensions/session-manager.ts ~/.pi/agent/extensions/
+```
+
+### How it works
+
+On every `session_start`:
+1. Creates `.think-sessions/session-NNN/` (incrementing number)
+2. Points the `.think/` symlink to that directory
+3. The model writes to `.think/` as always — completely transparent
+
+```
+.think-sessions/
+  sessions.json             ← index of all sessions
+  session-001/              ← first Pi tab
+    _state.md, _plan.md, step-001.md ...
+  session-002/              ← second Pi tab
+    _state.md, _plan.md, step-001.md ...
+.think/ → .think-sessions/session-002/   ← symlink to active session
+```
+
+### First-time migration
+
+If `.think/` already exists as a real directory (from before this extension was installed), it gets moved to `.think-sessions/session-001/` automatically. No data loss.
+
+### Commands
+
+```
+/sessions                   — list all sessions with task name + last-active date
+/resume                     — same list, with instructions to pick one
+/resume session-003         — switch .think/ symlink to that session, inject steer to read _state.md
+```
+
+### .gitignore
+
+The extension auto-appends `.think/` and `.think-sessions/` to `.gitignore` on first run.
+
+---
+
+## 18. LM Studio inference settings
 
 These settings apply per-request (no model reload needed). Change them in LM Studio's Inference tab.
 
@@ -974,7 +1027,7 @@ These settings apply per-request (no model reload needed). Change them in LM Stu
 
 ---
 
-## 18. First run + verification
+## 19. First run + verification
 
 1. Start LM Studio's server and load `qwen3.6-35b-a3b`.
 2. From any project directory:
@@ -1042,7 +1095,7 @@ Three real-world prompts tested after full stack was operational:
 
 ---
 
-## 19. Useful slash commands inside Pi
+## 20. Useful slash commands inside Pi
 
 | Command | What it does |
 |---|---|
@@ -1059,6 +1112,9 @@ Three real-world prompts tested after full stack was operational:
 | `/piforge` | Show all toggleable extensions + enabled/disabled status |
 | `/piforge enable <name>` | Enable an extension (takes effect next session or after `/reload`) |
 | `/piforge disable <name>` | Disable an extension |
+| `/sessions` | List all `.think/` sessions with task + last-active date |
+| `/resume` | List sessions and pick one to resume |
+| `/resume <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |
 | `/reload` | Hot-reload extensions / skills / settings (no need to quit) |
 | `/usage` | Show tokens per turn — verify calls stay small |
 | `/tree` | Show full event tree (tool calls, thinking, results) |
@@ -1081,7 +1137,7 @@ pi --continue                  # resume the last session
 
 ---
 
-## 20. Troubleshooting
+## 21. Troubleshooting
 
 **`No models available`**
 LM Studio server isn't running, or `models.json` `id` doesn't match the model id from `curl /v1/models`. Check both.
@@ -1116,7 +1172,7 @@ The reason text isn't being interpreted. Two possible fixes:
 
 ---
 
-## 21. Replication checklist
+## 22. Replication checklist
 
 On a fresh machine, in order:
 
@@ -1136,6 +1192,7 @@ On a fresh machine, in order:
 - [ ] `~/.pi/agent/extensions/knowledge-injector.ts` created
 - [ ] `~/.pi/agent/extensions/plan-clarify.ts` created
 - [ ] `~/.pi/agent/extensions/piforge-manager.ts` created
+- [ ] `~/.pi/agent/extensions/session-manager.ts` created
 - [ ] `~/.pi/piforge.json` created (`{ "disabled": ["knowledge-injector", "plan-clarify"] }`)
 - [ ] `~/.pi/knowledge/` directory created with at least one gotchas file
 - [ ] `pi --list-models` shows the LM Studio models
@@ -1168,7 +1225,8 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         ├── first-prompt.ts             ← injects planning instruction into first prompt
         ├── knowledge-injector.ts       ← isolated LLM call selects knowledge files (off by default)
         ├── plan-clarify.ts             ← asks clarifying questions after _plan.md (off by default)
-        └── piforge-manager.ts          ← /piforge toggle command
+        ├── piforge-manager.ts          ← /piforge toggle command
+        └── session-manager.ts          ← per-tab .think/ isolation via symlinks
 ```
 
 All extension source files live in `piforge/extensions/`. To update an extension: edit the file there, then copy it to `~/.pi/agent/extensions/` and run `/reload` inside Pi. Or re-run `bash install.sh` to reinstall everything.

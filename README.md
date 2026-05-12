@@ -91,6 +91,26 @@ Output structure:
 └── tmp/               ← prompt files (auto-cleaned)
 ```
 
+### Session isolation (per-tab `.think/`)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `session-manager.ts` | Auto-creates isolated `.think/` per Pi terminal instance via symlinks | on |
+
+Every time you open a new Pi terminal, `session-manager` creates a fresh directory under `.think-sessions/` and points the `.think/` symlink to it. The model always writes to `.think/` — same hardcoded path, zero tokens wasted on session management.
+
+```
+.think-sessions/
+  session-001/          ← first Pi tab's state
+  session-002/          ← second Pi tab's state
+  session-003/          ← third Pi tab's state
+.think/ → .think-sessions/session-003/   ← symlink to active session
+```
+
+If `.think/` already exists as a real directory (from before the extension), it gets migrated automatically into `session-001`.
+
+Commands: `/sessions` (list all), `/resume` (list + pick), `/resume session-001` (switch directly — injects steer to read `_state.md`)
+
 ### Purpose anchor (anti-drift after compaction)
 
 | Extension | What it does | Default |
@@ -162,6 +182,7 @@ incremental-guard active (max 100 lines / 6000 chars per write/edit)
 thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
 context-monitor active — warn at 65%, urgent at 80% (window: XXXXX tokens)
 analysis-guard active (triggers on responses >1000 chars with no file write)
+session-manager: session-001 — .think/ ready
 ```
 
 ---
@@ -263,7 +284,8 @@ piforge/
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
 │   ├── explore.ts                      ← /explore + explore_codebase tool (off by default)
 │   ├── distill-awareness.ts            ← session-start awareness (off by default)
-│   └── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
+│   ├── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
+│   └── session-manager.ts             ← per-tab .think/ isolation via symlinks
 ├── knowledge/
 │   ├── README.md                       ← how to write knowledge files
 │   ├── svelte5-gotchas.md              ← Svelte 5 runes failure patterns
