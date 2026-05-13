@@ -30,6 +30,11 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
+const SUB_PI_TIMEOUT = 60000; // 60s timeout for subprocess calls
 
 function hashContent(content: string): string {
   return crypto.createHash("md5").update(content).digest("hex");
@@ -124,68 +129,56 @@ function extractHeaders(content: string): string {
 }
 
 async function distillFile(
-  baseUrl: string,
-  modelId: string,
   fileName: string,
   content: string,
   log?: (msg: string) => void
 ): Promise<string> {
-  const url = `${baseUrl}/chat/completions`;
-  const body = {
-    model: modelId,
-    messages: [
-      {
-        role: "user",
-        content: `Read this knowledge file and write a summary. Use this format:
+  const tmpDir = os.tmpdir();
+  const promptFile = path.join(tmpDir, `ki-distill-${Date.now()}.md`);
+
+  const prompt = `Summarize this knowledge file. Start your response with exactly:
 
 # ${fileName}
-**Covers:** [what technology/domain]
+**Covers:** [technology/domain]
 
 **Key failure patterns:**
-- [pattern 1]
-- [pattern 2]
-- [pattern 3]
-- [etc]
+- [specific pattern from the file]
+- [another pattern]
 
 **Critical rules:**
-- [rule 1]
-- [rule 2]
-- [rule 3]
+- [specific rule]
 
-Write about 100 words total. Be specific — include the actual gotchas, not generic advice. /no_think
+~100 words. Be specific.
 
 ---
-${content}`,
-      },
-    ],
-    max_tokens: 300,
-    temperature: 0.3,
-    stream: false,
-  };
-  log?.(`  distill → POST ${url} model="${modelId}" content=${content.length} chars`);
+${content}`;
+
+  fs.writeFileSync(promptFile, prompt, "utf8");
+  log?.(`  distill → pi subprocess (${content.length} chars)`);
+
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => "");
-      log?.(`  distill FAILED: HTTP ${res.status} ${res.statusText} — ${errBody.slice(0, 200)}`);
+    const { stdout } = await execAsync(
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      { timeout: SUB_PI_TIMEOUT }
+    );
+    const result = (stdout || "").trim();
+
+    if (!result) {
+      log?.(`  distill FAILED: empty output`);
       return "";
     }
-    const data = (await res.json()) as any;
-    const msg = data?.choices?.[0]?.message;
-    const result = (msg?.content ?? "").trim() || (msg?.reasoning_content ?? "").trim();
-    if (!result) {
-      log?.(`  distill FAILED: empty content in response — raw: ${JSON.stringify(data?.choices?.[0]).slice(0, 200)}`);
-    } else {
-      log?.(`  distill OK: ${result.length} chars`);
-    }
+    log?.(`  distill OK: ${result.length} chars`);
     return result;
   } catch (err: any) {
+    const salvaged = (err.stdout || "").trim();
+    if (salvaged.length > 20) {
+      log?.(`  distill partial: ${salvaged.length} chars (timeout)`);
+      return salvaged;
+    }
     log?.(`  distill FAILED: ${err.message}`);
     return "";
+  } finally {
+    try { fs.unlinkSync(promptFile); } catch {}
   }
 }
 
@@ -206,8 +199,6 @@ function listKnowledgeFiles(): Array<{ filePath: string; name: string; descripti
 }
 
 async function buildDescriptions(
-  baseUrl: string,
-  modelId: string,
   files: Array<{ filePath: string; name: string; content?: string }>,
   log?: (msg: string) => void
 ): Promise<Array<{ filePath: string; name: string; description: string; content?: string }>> {
@@ -225,7 +216,7 @@ async function buildDescriptions(
         continue;
       }
       log?.(`  ${f.name} — large (${content.length} chars), distilling...`);
-      let description = await distillFile(baseUrl, modelId, f.name, content, log);
+      let description = await distillFile(f.name, content, log);
       if (!description) {
         description = extractHeaders(content);
         log?.(`  ${f.name} — distill failed, using headers only (NOT cached)`);
@@ -290,12 +281,13 @@ function buildSteerContent(): string {
 }
 
 async function selectRelevantFile(
-  baseUrl: string,
-  modelId: string,
   userPrompt: string,
   file: { name: string; description: string; content?: string },
   log?: (msg: string) => void
 ): Promise<boolean> {
+  const tmpDir = os.tmpdir();
+  const promptFile = path.join(tmpDir, `ki-select-${Date.now()}.md`);
+
   // Build file content section - use full content for small files, distilled summary for large
   const fileContent = file.content && file.content.length <= TOKEN_THRESHOLD
     ? file.content
@@ -313,44 +305,31 @@ Cost of missing a relevant file: hours of debugging (expensive).
 
 When uncertain, answer YES.
 
-YES or NO
+Answer only YES or NO.`;
 
-/no_think`;
+  fs.writeFileSync(promptFile, prompt, "utf8");
+  log?.(`  ${file.name} — evaluating...`);
 
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 10,
-        temperature: 0.0,
-        stream: false,
-      }),
-    });
-
-    if (!res.ok) {
-      log?.(`  ${file.name} — selection request failed (HTTP ${res.status}), defaulting to YES`);
-      return true; // Default to include on error
-    }
-
-    const data = (await res.json()) as any;
-    const msg = data?.choices?.[0]?.message;
-    const reply: string = ((msg?.content ?? "").trim() || (msg?.reasoning_content ?? "")).toUpperCase();
+    const { stdout } = await execAsync(
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      { timeout: SUB_PI_TIMEOUT }
+    );
+    const reply = (stdout || "").trim().toUpperCase();
 
     // Parse response - look for YES/NO, default to YES if unclear
     const isYes = reply.includes("YES") || (!reply.includes("NO") && reply.length < 20);
+    log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 50)}" → ${isYes ? "YES" : "NO"}`);
     return isYes;
   } catch (err: any) {
     log?.(`  ${file.name} — selection error: ${err.message}, defaulting to YES`);
     return true; // Default to include on error
+  } finally {
+    try { fs.unlinkSync(promptFile); } catch {}
   }
 }
 
 async function selectRelevantFiles(
-  baseUrl: string,
-  modelId: string,
   userPrompt: string,
   files: Array<{ name: string; description: string; content?: string }>,
   log?: (msg: string) => void
@@ -361,42 +340,13 @@ async function selectRelevantFiles(
 
   // Evaluate each file independently - small models handle one decision better than batch
   for (const file of files) {
-    const isRelevant = await selectRelevantFile(baseUrl, modelId, userPrompt, file, log);
+    const isRelevant = await selectRelevantFile(userPrompt, file, log);
     if (isRelevant) {
       selected.push(file.name);
     }
   }
 
   return selected;
-}
-
-function getModelConfig(pi: ExtensionAPI, ctx: any): { baseUrl: string; modelId: string } {
-  let baseUrl = "http://localhost:1234/v1";
-  let modelId = "";
-  try {
-    const model = (ctx as any).getModel?.() ?? (pi as any).getModel?.();
-    if (model) {
-      baseUrl = model.baseUrl ?? baseUrl;
-      modelId = model.id ?? modelId;
-    }
-  } catch {}
-
-  // Fallback: read from Pi's config files if API didn't return model info
-  if (!modelId) {
-    try {
-      const piDir = path.join(os.homedir(), ".pi", "agent");
-      const settings = JSON.parse(fs.readFileSync(path.join(piDir, "settings.json"), "utf-8"));
-      const provider = settings.defaultProvider ?? "lmstudio";
-      const models = JSON.parse(fs.readFileSync(path.join(piDir, "models.json"), "utf-8"));
-      const providerConfig = models.providers?.[provider];
-      if (providerConfig) {
-        baseUrl = providerConfig.baseUrl ?? baseUrl;
-        modelId = settings.defaultModel ?? providerConfig.models?.[0]?.id ?? "";
-      }
-    } catch {}
-  }
-
-  return { baseUrl, modelId };
 }
 
 // ---------- EXTENSION ----------
@@ -448,20 +398,19 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const { baseUrl, modelId } = getModelConfig(pi, ctx);
     const log = (msg: string) => {
       const line = `knowledge-injector: ${msg}`;
       console.log(`\n ${line}`);
       ctx.ui.notify(line, "info");
     };
 
-    // Step 1: distill large files (sequential LLM calls)
+    // Step 1: distill large files (sequential pi subprocess calls)
     log(`scanning ${rawFiles.length} knowledge files...`);
-    const files = await buildDescriptions(baseUrl, modelId, rawFiles, log);
+    const files = await buildDescriptions(rawFiles, log);
 
-    // Step 2: select relevant files (one LLM call per file)
+    // Step 2: select relevant files (one pi subprocess call per file)
     log(`selecting relevant files for task...`);
-    const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files, log);
+    const selected = await selectRelevantFiles(lastUserPrompt, files, log);
 
     // Log per-file selection result
     for (const f of files) {

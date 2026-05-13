@@ -111,12 +111,14 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 
 #### `knowledge-injector.ts`
 - **Scope:** turn 1 of every session + after compaction/restart
-- **Hook:** `input` (captures prompt) + `turn_start` (fires isolated LLM call before Pi's main call) + `session_compact` (re-injects from manifest)
-- **What it does:** makes an isolated `fetch()` to Pi's own model/endpoint, asks it which files in `./knowledge/` are relevant to the user's task, injects only the selected file content as a steer — selection reasoning never enters Pi's context. Saves selected filenames to `.think/_knowledge-manifest.md`. After compaction or restart, reads the manifest and re-injects from source files — no re-selection needed.
+- **Hook:** `input` (captures prompt) + `turn_start` (injects selected content) + `session_compact` (re-injects from manifest)
+- **What it does:** uses pi subprocess calls (`pi --thinking off`) to evaluate each knowledge file:
+  1. **Distillation** (large files >2000 chars): Summarizes to ~100 words, cached in `.distilled/` with hash-based invalidation
+  2. **Selection** (per file): Asks "Is this file relevant to the purpose?" — each file evaluated independently for better accuracy
 - **Blocks:** code writes (`write`/`edit`) until `.think/_knowledge.md` is created — proof the model processed the injected knowledge
 - **Commands:** `/forget <name>` removes from manifest; `/forget` lists active knowledge
 - **Toggle:** `/piforge enable knowledge-injector` / `/piforge disable knowledge-injector`
-- **Default:** disabled (enable per session when working with a tech that has knowledge files)
+- **Default:** on
 
 #### `plan-clarify.ts`
 - **Scope:** fires whenever `_plan.md` is written
@@ -813,10 +815,13 @@ Local 35B models often start implementation immediately without planning. Append
 **How it works:**
 
 ```
-user prompt → isolated fetch() to Pi's own LLM → selects relevant files → injects content only → Pi's main LLM call
+user prompt → distill large files (cached) → select per-file → inject content → Pi's main LLM call
 ```
 
-The selection step is an **isolated HTTP call** to Pi's model endpoint. The LLM reads the task and knowledge filenames and replies with which files to load. That reasoning never enters Pi's conversation history — only the selected file content is injected as a steer.
+Uses **pi subprocess calls** with `--thinking off` for clean output from thinking models:
+
+1. **Distillation**: Large files (>2000 chars) are summarized to ~100 words. Cached in `.distilled/` with hash-based invalidation — only re-distills when source file changes.
+2. **Selection**: Each file is evaluated independently ("Is this file relevant to the purpose?"). Per-file evaluation is more accurate than batch selection.
 
 **File: `~/.pi/agent/extensions/knowledge-injector.ts`**
 
@@ -1333,7 +1338,7 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         ├── analysis-guard.ts           ← forces analysis to be written to disk
         ├── distill.ts                  ← /distill codebase knowledge-base builder
         ├── first-prompt.ts             ← injects planning instruction into first prompt
-        ├── knowledge-injector.ts       ← isolated LLM selects project-local knowledge files
+        ├── knowledge-injector.ts       ← pi subprocess selects project-local knowledge files
         ├── plan-clarify.ts             ← asks clarifying questions after _plan.md (off by default)
         ├── piforge-manager.ts          ← /piforge toggle command
         ├── session-manager.ts          ← per-tab .think/ isolation via symlinks

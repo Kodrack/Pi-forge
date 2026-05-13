@@ -22,7 +22,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
-| `knowledge-injector.ts` | Isolated LLM call selects relevant `./knowledge/` files (project-local), saves manifest, auto re-injects after compaction. Large files (>500 tokens) distilled to `.distilled/` with hash-based cache. Small files sent in full to selection LLM. `/forget` to remove. | on |
+| `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
 
 These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
@@ -185,15 +185,18 @@ Queue messages while Pi is working. Each item is delivered one at a time after P
 
 `knowledge/` — inference-time context injection with zero context pollution.
 
-On turn 1, `knowledge-injector` makes an **isolated LLM call** using Pi's own model and endpoint. It passes the user's prompt + the knowledge filenames and asks "which are relevant?". The selection reasoning happens in that isolated call — it never appears in Pi's conversation history. Only the selected file content gets injected as a steer.
+On turn 1, `knowledge-injector` uses **pi subprocess calls** (`pi --thinking off`) to evaluate each knowledge file:
 
-This means: smart semantic selection (the LLM knows the task), zero reasoning trace in context.
+1. **Distillation** (large files >2000 chars): Summarizes to ~100 words, cached in `.distilled/` with hash-based invalidation. Only re-distills when source file changes.
+2. **Selection** (per file): Asks "Is this file relevant to the purpose?" with YES bias. Each file evaluated independently — better accuracy than batch selection.
 
 ```
-user prompt → isolated call → selects files → injects content only → Pi's main LLM call
+user prompt → distill large files (cached) → select per-file → inject content → Pi's main LLM call
 ```
 
-Selected filenames are saved to `.think/_knowledge-manifest.md`. After compaction or session restart, the extension reads the manifest, rebuilds the content from source files, and re-injects automatically — zero LLM cost, no re-selection needed. Use `/forget <name>` to remove knowledge mid-session.
+Using `--thinking off` ensures clean output from thinking models (Qwen3, etc.) — no reasoning trace pollution.
+
+Selected filenames are saved to `.think/_knowledge-manifest.md`. After compaction or session restart, the extension reads the manifest, rebuilds the content from source files, and re-injects automatically — zero LLM cost, no re-selection needed.
 
 Code writes are blocked until `.think/_knowledge.md` is written — proof the model absorbed the knowledge.
 
