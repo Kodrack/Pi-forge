@@ -29,6 +29,11 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as crypto from "crypto";
+
+function hashContent(content: string): string {
+  return crypto.createHash("md5").update(content).digest("hex");
+}
 
 const KNOWLEDGE_DIR = path.join(process.cwd(), "knowledge");
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
@@ -90,21 +95,21 @@ function distilledPath(fileName: string): string {
   return path.join(DISTILLED_DIR, fileName);
 }
 
-function readDistilledFile(fileName: string): { description: string; mtime: number } | null {
+function readDistilledFile(fileName: string): { description: string; hash: string } | null {
   try {
     const content = fs.readFileSync(distilledPath(fileName), "utf-8");
-    const mtimeMatch = content.match(/^<!-- mtime:(\d+(?:\.\d+)?) -->/);
-    const mtime = mtimeMatch ? parseFloat(mtimeMatch[1]) : 0;
-    const description = content.replace(/^<!-- mtime:\S+ -->\n/, "").trim();
-    return { description, mtime };
+    const hashMatch = content.match(/^<!-- hash:([a-f0-9]+) -->/);
+    const hash = hashMatch ? hashMatch[1] : "";
+    const description = content.replace(/^<!-- hash:[a-f0-9]+ -->\n/, "").trim();
+    return { description, hash };
   } catch {
     return null;
   }
 }
 
-function writeDistilledFile(fileName: string, description: string, mtime: number): void {
+function writeDistilledFile(fileName: string, description: string, hash: string): void {
   ensureDistilledDir();
-  fs.writeFileSync(distilledPath(fileName), `<!-- mtime:${mtime} -->\n${description}\n`);
+  fs.writeFileSync(distilledPath(fileName), `<!-- hash:${hash} -->\n${description}\n`);
 }
 
 function extractHeaders(content: string): string {
@@ -122,29 +127,63 @@ async function distillFile(
   baseUrl: string,
   modelId: string,
   fileName: string,
-  content: string
+  content: string,
+  log?: (msg: string) => void
 ): Promise<string> {
+  const url = `${baseUrl}/chat/completions`;
+  const body = {
+    model: modelId,
+    messages: [
+      {
+        role: "user",
+        content: `Read this knowledge file and write a summary. Use this format:
+
+# ${fileName}
+**Covers:** [what technology/domain]
+
+**Key failure patterns:**
+- [pattern 1]
+- [pattern 2]
+- [pattern 3]
+- [etc]
+
+**Critical rules:**
+- [rule 1]
+- [rule 2]
+- [rule 3]
+
+Write about 100 words total. Be specific — include the actual gotchas, not generic advice.
+
+---
+${content}`,
+      },
+    ],
+    max_tokens: 300,
+    temperature: 0.3,
+    stream: false,
+  };
+  log?.(`  distill → POST ${url} model="${modelId}" content=${content.length} chars`);
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          {
-            role: "user",
-            content: `Summarize this knowledge file as a concise reference. Include:\n- Title and what technology/domain it covers\n- Key failure patterns (bullet points)\n- Critical rules to follow\n\nKeep it under 300 words. Use bullet points.\n\nFile: ${fileName}\n\n${content}`,
-          },
-        ],
-        max_tokens: 400,
-        temperature: 0.1,
-        stream: false,
-      }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) return "";
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      log?.(`  distill FAILED: HTTP ${res.status} ${res.statusText} — ${errBody.slice(0, 200)}`);
+      return "";
+    }
     const data = (await res.json()) as any;
-    return (data?.choices?.[0]?.message?.content ?? "").trim();
-  } catch {
+    const result = (data?.choices?.[0]?.message?.content ?? "").trim();
+    if (!result) {
+      log?.(`  distill FAILED: empty content in response — raw: ${JSON.stringify(data?.choices?.[0]).slice(0, 200)}`);
+    } else {
+      log?.(`  distill OK: ${result.length} chars`);
+    }
+    return result;
+  } catch (err: any) {
+    log?.(`  distill FAILED: ${err.message}`);
     return "";
   }
 }
@@ -174,29 +213,34 @@ async function buildDescriptions(
   const result = [];
   for (const f of files) {
     const content = f.content ?? fs.readFileSync(f.filePath, "utf-8");
-    const mtime = fs.statSync(f.filePath).mtimeMs;
-    const cached = readDistilledFile(f.name);
+    const hash = hashContent(content);
 
-    // Cache hit — source file hasn't changed
-    if (cached && Math.abs(cached.mtime - mtime) < 1000) {
-      log?.(`  ${f.name} — cached (.distilled/${f.name})`);
-      result.push({ filePath: f.filePath, name: f.name, description: cached.description, content });
-      continue;
-    }
-
-    let description: string;
-    if (content.length <= TOKEN_THRESHOLD) {
-      description = extractHeaders(content);
-      log?.(`  ${f.name} — small (${content.length} chars), full content to selection`);
-    } else {
+    if (content.length > TOKEN_THRESHOLD) {
+      // Large file — check hash, re-distill only if content changed
+      const cached = readDistilledFile(f.name);
+      if (cached && cached.hash === hash) {
+        log?.(`  ${f.name} — cached (.distilled/${f.name})`);
+        result.push({ filePath: f.filePath, name: f.name, description: cached.description, content });
+        continue;
+      }
       log?.(`  ${f.name} — large (${content.length} chars), distilling...`);
-      description = await distillFile(baseUrl, modelId, f.name, content);
-      if (!description) description = extractHeaders(content);
-      log?.(`  ${f.name} — distilled → .distilled/${f.name}`);
+      let description = await distillFile(baseUrl, modelId, f.name, content, log);
+      if (!description) {
+        description = extractHeaders(content);
+        log?.(`  ${f.name} — distill failed, using headers only (NOT cached)`);
+        // Don't cache failed distills — next run will retry
+        result.push({ filePath: f.filePath, name: f.name, description, content });
+        continue;
+      }
+      writeDistilledFile(f.name, description, hash);
+      log?.(`  ${f.name} → .distilled/${f.name}`);
+      result.push({ filePath: f.filePath, name: f.name, description, content });
+    } else {
+      // Small file — full content judged directly by selection LLM, no distill
+      const description = extractHeaders(content);
+      log?.(`  ${f.name} — small (${content.length} chars), full content to selection`);
+      result.push({ filePath: f.filePath, name: f.name, description, content });
     }
-
-    writeDistilledFile(f.name, description, mtime);
-    result.push({ filePath: f.filePath, name: f.name, description, content });
   }
 
   return result;
@@ -277,12 +321,17 @@ async function selectRelevantFiles(
 Available knowledge files:
 ${fileSections}
 
-Which files are relevant to this task? Think about what technologies and patterns this task involves.
-Reply with ONLY the relevant filenames, one per line.
-If none are relevant, reply: none`,
+Which files contain failure patterns relevant to this task? Think step by step:
+1. What technologies does this task involve? (UI, canvas, drag-drop, testing, etc.)
+2. Which files cover those technologies?
+
+When in doubt, INCLUDE the file — loading an extra file is cheap, missing a relevant one causes bugs.
+Reply with ONLY the filenames, one per line. Example:
+some-file.md
+another-file.md`,
           },
         ],
-        max_tokens: 80,
+        max_tokens: 120,
         temperature: 0.1,
         stream: false,
       }),
@@ -291,7 +340,7 @@ If none are relevant, reply: none`,
     if (!res.ok) return [];
     const data = (await res.json()) as any;
     const reply: string = data?.choices?.[0]?.message?.content ?? "";
-    if (reply.trim().toLowerCase() === "none") return [];
+    if (reply.trim().toLowerCase().startsWith("none")) return [];
 
     return files
       .filter((f) => reply.toLowerCase().includes(f.name.toLowerCase().replace(".md", "")))
@@ -311,6 +360,22 @@ function getModelConfig(pi: ExtensionAPI, ctx: any): { baseUrl: string; modelId:
       modelId = model.id ?? modelId;
     }
   } catch {}
+
+  // Fallback: read from Pi's config files if API didn't return model info
+  if (!modelId) {
+    try {
+      const piDir = path.join(os.homedir(), ".pi", "agent");
+      const settings = JSON.parse(fs.readFileSync(path.join(piDir, "settings.json"), "utf-8"));
+      const provider = settings.defaultProvider ?? "lmstudio";
+      const models = JSON.parse(fs.readFileSync(path.join(piDir, "models.json"), "utf-8"));
+      const providerConfig = models.providers?.[provider];
+      if (providerConfig) {
+        baseUrl = providerConfig.baseUrl ?? baseUrl;
+        modelId = settings.defaultModel ?? providerConfig.models?.[0]?.id ?? "";
+      }
+    } catch {}
+  }
+
   return { baseUrl, modelId };
 }
 
@@ -319,6 +384,8 @@ export default function (pi: ExtensionAPI) {
   let firstTurnHandled = false;
   let lastUserPrompt = "";
   let knowledgeAcknowledged = false;
+
+  let knowledgeDone = false;
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     if (!isEnabled()) {
@@ -330,79 +397,77 @@ export default function (pi: ExtensionAPI) {
     if (active.length > 0) {
       const loaded = rebuildContent();
       ctx.ui.notify(`knowledge-injector active — restored: ${loaded.join(", ")}`, "info");
-    } else {
-      const files = listKnowledgeFiles();
-      ctx.ui.notify(
-        files.length > 0
-          ? `knowledge-injector active — ${files.length} files in ./knowledge/`
-          : "knowledge-injector active — no ./knowledge/ folder found",
-        "info"
-      );
-    }
-  });
-
-  pi.on("input", (event: any) => {
-    lastUserPrompt = event.text ?? "";
-  });
-
-  // First turn: select + inject
-  pi.on("turn_start", async (_event: any, ctx: any) => {
-    if (!isEnabled() || firstTurnHandled) return;
-    firstTurnHandled = true;
-
-    const active = readManifest();
-
-    // Resuming with existing manifest — inject directly
-    if (active.length > 0) {
-      const content = buildSteerContent();
-      if (content) {
-        await pi.sendMessage(
-          {
-            customType: "knowledge_inject",
-            content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
-            display: { label: "knowledge-injector", content: `Restored: ${active.join(", ")}` },
-          },
-          { deliverAs: "steer" }
-        );
-      }
+      knowledgeDone = true;
       return;
     }
 
-    // Fresh session — build descriptions + isolated LLM call to select
+    const files = listKnowledgeFiles();
+    ctx.ui.notify(
+      files.length > 0
+        ? `knowledge-injector active — ${files.length} files in ./knowledge/`
+        : "knowledge-injector active — no ./knowledge/ folder found",
+      "info"
+    );
+  });
+
+  // input: user typed first prompt — do ALL LLM work here (distill + select)
+  // LM Studio is idle, Pi hasn't started its turn yet
+  pi.on("input", async (event: any, ctx: any) => {
+    lastUserPrompt = event.text ?? "";
+
+    if (knowledgeDone) return;
+    knowledgeDone = true;
+
+    if (!isEnabled()) return;
+    if (readManifest().length > 0) return;
+
     const rawFiles = listKnowledgeFiles();
     if (rawFiles.length === 0) {
-      ctx.ui.notify("knowledge-injector: no files in ./knowledge/", "info");
+      knowledgeAcknowledged = true;
       return;
     }
 
     const { baseUrl, modelId } = getModelConfig(pi, ctx);
     const log = (msg: string) => ctx.ui.notify(`knowledge-injector: ${msg}`, "info");
-    log(`scanning ${rawFiles.length} files in ./knowledge/`);
 
+    // Step 1: distill large files (sequential LLM calls)
     const files = await buildDescriptions(baseUrl, modelId, rawFiles, log);
-    log(`descriptions ready — asking LLM to select relevant files...`);
 
+    // Step 2: select relevant files (one LLM call)
+    log(`selecting relevant files for task...`);
     const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files);
+
     if (selected.length === 0) {
       log("selection result: none relevant for this task");
       knowledgeAcknowledged = true;
       return;
     }
 
-    const skipped = files.filter(f => !selected.includes(f.name)).map(f => f.name);
-    log(`selected: ${selected.join(", ")}${skipped.length > 0 ? ` | skipped: ${skipped.join(", ")}` : ""}`);
+    console.log(`\n  knowledge-injector: picked files → ${selected.join(", ")}\n`);
+    log(`picked files → ${selected.join(", ")}`);
 
-    // Save to manifest + build content
     writeManifest(selected.map((n) => n.replace(".md", "")));
-    const loaded = rebuildContent();
-    const content = buildSteerContent();
+    rebuildContent();
+  });
 
+  // turn_start: NO LLM calls — just inject already-selected content
+  pi.on("turn_start", async (_event: any, ctx: any) => {
+    if (!isEnabled() || firstTurnHandled) return;
+    firstTurnHandled = true;
+
+    const active = readManifest();
+    if (active.length === 0) {
+      knowledgeAcknowledged = true;
+      return;
+    }
+
+    const content = buildSteerContent();
     if (content) {
       await pi.sendMessage(
         {
           customType: "knowledge_inject",
           content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
-          display: { label: "knowledge-injector", content: `Loaded: ${loaded.join(", ")}` },
+          display: { label: "knowledge-injector", content: `Loaded: ${active.join(", ")}` },
         },
         { deliverAs: "steer" }
       );

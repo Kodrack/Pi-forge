@@ -962,7 +962,7 @@ cp $(pwd)/extensions/piforge-manager.ts ~/.pi/agent/extensions/
 ### Config file
 
 ```bash
-# Create ~/.pi/piforge.json (knowledge-injector + plan-clarify disabled by default)
+# Create ~/.pi/piforge.json (plan-clarify + loop-guard disabled by default)
 cat > ~/.pi/piforge.json << 'EOF'
 {
   "disabled": ["knowledge-injector", "plan-clarify"]
@@ -991,7 +991,7 @@ Changes take effect next session, or immediately after `/reload`.
 | Extension | Default | When to enable |
 |---|---|---|
 | `first-prompt` | on | Always — disable only for raw testing |
-| `knowledge-injector` | off | When working with a tech that has knowledge files |
+| `knowledge-injector` | **on** | Auto-selects relevant `./knowledge/` files per task |
 | `plan-clarify` | off | When wrong assumptions would be expensive to fix later |
 
 ### Session-start notification
@@ -1333,7 +1333,7 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         ├── analysis-guard.ts           ← forces analysis to be written to disk
         ├── distill.ts                  ← /distill codebase knowledge-base builder
         ├── first-prompt.ts             ← injects planning instruction into first prompt
-        ├── knowledge-injector.ts       ← isolated LLM call selects knowledge files (off by default)
+        ├── knowledge-injector.ts       ← isolated LLM selects project-local knowledge files
         ├── plan-clarify.ts             ← asks clarifying questions after _plan.md (off by default)
         ├── piforge-manager.ts          ← /piforge toggle command
         ├── session-manager.ts          ← per-tab .think/ isolation via symlinks

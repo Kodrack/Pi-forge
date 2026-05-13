@@ -22,11 +22,11 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
-| `knowledge-injector.ts` | Isolated LLM call selects relevant `./knowledge/` files (project-local), saves manifest, auto re-injects after compaction. Distills large files to `.distilled/` subfolder. `/forget` to remove. | **off** |
+| `knowledge-injector.ts` | Isolated LLM call selects relevant `./knowledge/` files (project-local), saves manifest, auto re-injects after compaction. Large files (>500 tokens) distilled to `.distilled/` with hash-based cache. Small files sent in full to selection LLM. `/forget` to remove. | on |
 
 These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
-`plan-clarify`, `knowledge-injector`, and `loop-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
+`plan-clarify` and `loop-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
 
 ### Codebase distillation — zoom levels for local models
 
@@ -344,7 +344,7 @@ piforge/
 │   ├── token-counter.ts                ← tracks tokens + Gemini cost comparison
 │   ├── first-prompt.ts                 ← injects planning instruction into first prompt only
 │   ├── plan-clarify.ts                 ← clarifying questions after _plan.md (off by default)
-│   ├── knowledge-injector.ts           ← isolated LLM call selects knowledge files (off by default)
+│   ├── knowledge-injector.ts           ← isolated LLM selects project-local knowledge files, hash-based distill cache
 │   ├── state-guard.ts                  ← blocks reads until _state.md read, forces updates
 │   ├── loop-guard.ts                   ← detects repetition loops + malformed tool calls
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
@@ -369,7 +369,7 @@ piforge/
 ├── config/
 │   ├── models.json                     ← LM Studio provider config template
 │   ├── settings.json                   ← Pi global settings
-│   └── piforge.json                    ← extension toggles (plan-clarify + knowledge-injector off by default)
+│   └── piforge.json                    ← extension toggles (plan-clarify + loop-guard off by default)
 └── project-template/
     └── AGENTS.md                       ← drop in any project
 ```
