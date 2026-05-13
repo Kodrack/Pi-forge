@@ -11,8 +11,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ---------- THRESHOLDS ----------
-const WARN_PERCENT   = 65;   // first warning — write state now
-const URGENT_PERCENT = 80;   // hard warning — session ending soon
+const WARN_PERCENT   = 65;   // warning — write state now
+const FORCE_COMPACT_PERCENT = 80; // force compaction — no warning, just compact
 
 // ---------- STEERING MESSAGES ----------
 const WARN_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
@@ -25,15 +25,6 @@ ACTION REQUIRED before your next response:
 Keep your response short. Prioritize the file writes.
 Then CONTINUE working normally. Compaction will free up space automatically.`;
 
-const URGENT_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
-
-Write state to disk NOW, then compact:
-1. Write COMPLETE state to .think/_state.md — every detail, nothing from memory
-2. Write COMPLETE summary to .think/_summary.md
-3. Write next actions to .think/_state.md under "Next Action"
-4. Run /compact to free up context space
-
-Then CONTINUE working. Do NOT stop. Do NOT ask the user to start a new session.`;
 
 // ---------- HELPERS ----------
 function formatMessage(template: string, percent: number): string {
@@ -42,14 +33,13 @@ function formatMessage(template: string, percent: number): string {
 
 // ---------- EXTENSION ----------
 export default function (pi: ExtensionAPI) {
-  let warnFired   = false;
-  let urgentFired = false;
+  let warnFired = false;
 
   pi.on("session_start", async (_event, ctx) => {
     const usage = ctx.getContextUsage();
     const window = usage?.contextWindow ?? "unknown";
     ctx.ui.notify(
-      `context-monitor active — warn at ${WARN_PERCENT}%, urgent at ${URGENT_PERCENT}% (window: ${window} tokens)`,
+      `context-monitor active — warn at ${WARN_PERCENT}%, force compact at ${FORCE_COMPACT_PERCENT}% (window: ${window} tokens)`,
       "info"
     );
   });
@@ -62,32 +52,32 @@ export default function (pi: ExtensionAPI) {
 
     // Reset flags if context dropped (e.g. after compaction or new session).
     if (pct < WARN_PERCENT) {
-      warnFired   = false;
-      urgentFired = false;
+      warnFired = false;
       return;
     }
 
-    // URGENT threshold — fires once, overrides warn.
-    if (pct >= URGENT_PERCENT && !urgentFired) {
-      urgentFired = true;
-      warnFired   = true; // suppress warn since urgent supersedes it
+    // FORCE COMPACT threshold — always compact when above 80%, every turn if needed.
+    if (pct >= FORCE_COMPACT_PERCENT) {
+      warnFired = true; // suppress warn since we're compacting
 
       ctx.ui.notify(
-        `context-monitor: URGENT — context at ${Math.round(pct)}%. Writing state to .think/ is critical now.`,
+        `context-monitor: ${Math.round(pct)}% — forcing compaction now`,
         "warn"
       );
 
-      await pi.sendMessage(
-        {
-          customType: "context_monitor_urgent",
-          content: formatMessage(URGENT_MESSAGE, pct),
-          display: {
-            label: "context-monitor",
-            content: `URGENT: Context at ${Math.round(pct)}%. Write state files and notify user.`,
+      try {
+        (ctx as any).compact?.({
+          customInstructions: "Context was auto-compacted at 80%. Continue from .think/_state.md.",
+          onComplete: () => {
+            ctx.ui.notify("context-monitor: compaction complete", "info");
           },
-        },
-        { deliverAs: "steer" }
-      );
+          onError: (err: Error) => {
+            ctx.ui.notify(`context-monitor: compaction failed — ${err.message}`, "error");
+          },
+        });
+      } catch (err: any) {
+        ctx.ui.notify(`context-monitor: compact() failed — ${err.message}`, "error");
+      }
       return;
     }
 
@@ -126,7 +116,7 @@ export default function (pi: ExtensionAPI) {
       const pct = usage.percent !== null ? `${Math.round(usage.percent)}%` : "unknown";
       ctx.ui.notify(
         `context-monitor: ${usage.tokens ?? "?"} / ${usage.contextWindow} tokens (${pct}). ` +
-        `Warn at ${WARN_PERCENT}%, urgent at ${URGENT_PERCENT}%.`,
+        `Warn at ${WARN_PERCENT}%, force compact at ${FORCE_COMPACT_PERCENT}%.`,
         "info"
       );
     },
