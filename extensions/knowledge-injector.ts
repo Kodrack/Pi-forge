@@ -152,7 +152,7 @@ async function distillFile(
 - [rule 2]
 - [rule 3]
 
-Write about 100 words total. Be specific — include the actual gotchas, not generic advice.
+Write about 100 words total. Be specific — include the actual gotchas, not generic advice. /no_think
 
 ---
 ${content}`,
@@ -175,7 +175,8 @@ ${content}`,
       return "";
     }
     const data = (await res.json()) as any;
-    const result = (data?.choices?.[0]?.message?.content ?? "").trim();
+    const msg = data?.choices?.[0]?.message;
+    const result = (msg?.content ?? "").trim() || (msg?.reasoning_content ?? "").trim();
     if (!result) {
       log?.(`  distill FAILED: empty content in response — raw: ${JSON.stringify(data?.choices?.[0]).slice(0, 200)}`);
     } else {
@@ -288,24 +289,33 @@ function buildSteerContent(): string {
   }
 }
 
-async function selectRelevantFiles(
+async function selectRelevantFile(
   baseUrl: string,
   modelId: string,
   userPrompt: string,
-  files: Array<{ name: string; description: string; content?: string }>
-): Promise<string[]> {
-  if (files.length === 0) return [];
+  file: { name: string; description: string; content?: string },
+  log?: (msg: string) => void
+): Promise<boolean> {
+  // Build file content section - use full content for small files, distilled summary for large
+  const fileContent = file.content && file.content.length <= TOKEN_THRESHOLD
+    ? file.content
+    : file.description;
 
-  // For small files (under ~500 tokens), include full content so the LLM
-  // can judge relevance from actual failure patterns, not just headers.
-  // The call is isolated — no context pollution, and small files are cheap.
-  const fileSections = files.map((f, i) => {
-    const header = `${i + 1}. ${f.name}`;
-    if (f.content && f.content.length <= TOKEN_THRESHOLD) {
-      return `${header}\n<content>\n${f.content}\n</content>`;
-    }
-    return `${header}${f.description ? ` — ${f.description}` : ""}`;
-  }).join("\n\n");
+  const prompt = `PURPOSE: "${userPrompt}"
+
+FILE: ${file.name}
+${fileContent}
+
+Is this file relevant to the purpose?
+
+Cost of including an irrelevant file: ~500 tokens (cheap).
+Cost of missing a relevant file: hours of debugging (expensive).
+
+When uncertain, answer YES.
+
+YES or NO
+
+/no_think`;
 
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -313,41 +323,51 @@ async function selectRelevantFiles(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelId,
-        messages: [
-          {
-            role: "user",
-            content: `Task: "${userPrompt}"
-
-Available knowledge files:
-${fileSections}
-
-Which files contain failure patterns relevant to this task? Think step by step:
-1. What technologies does this task involve? (UI, canvas, drag-drop, testing, etc.)
-2. Which files cover those technologies?
-
-When in doubt, INCLUDE the file — loading an extra file is cheap, missing a relevant one causes bugs.
-Reply with ONLY the filenames, one per line. Example:
-some-file.md
-another-file.md`,
-          },
-        ],
-        max_tokens: 120,
-        temperature: 0.1,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 10,
+        temperature: 0.0,
         stream: false,
       }),
     });
 
-    if (!res.ok) return [];
-    const data = (await res.json()) as any;
-    const reply: string = data?.choices?.[0]?.message?.content ?? "";
-    if (reply.trim().toLowerCase().startsWith("none")) return [];
+    if (!res.ok) {
+      log?.(`  ${file.name} — selection request failed (HTTP ${res.status}), defaulting to YES`);
+      return true; // Default to include on error
+    }
 
-    return files
-      .filter((f) => reply.toLowerCase().includes(f.name.toLowerCase().replace(".md", "")))
-      .map((f) => f.name);
-  } catch {
-    return [];
+    const data = (await res.json()) as any;
+    const msg = data?.choices?.[0]?.message;
+    const reply: string = ((msg?.content ?? "").trim() || (msg?.reasoning_content ?? "")).toUpperCase();
+
+    // Parse response - look for YES/NO, default to YES if unclear
+    const isYes = reply.includes("YES") || (!reply.includes("NO") && reply.length < 20);
+    return isYes;
+  } catch (err: any) {
+    log?.(`  ${file.name} — selection error: ${err.message}, defaulting to YES`);
+    return true; // Default to include on error
   }
+}
+
+async function selectRelevantFiles(
+  baseUrl: string,
+  modelId: string,
+  userPrompt: string,
+  files: Array<{ name: string; description: string; content?: string }>,
+  log?: (msg: string) => void
+): Promise<string[]> {
+  if (files.length === 0) return [];
+
+  const selected: string[] = [];
+
+  // Evaluate each file independently - small models handle one decision better than batch
+  for (const file of files) {
+    const isRelevant = await selectRelevantFile(baseUrl, modelId, userPrompt, file, log);
+    if (isRelevant) {
+      selected.push(file.name);
+    }
+  }
+
+  return selected;
 }
 
 function getModelConfig(pi: ExtensionAPI, ctx: any): { baseUrl: string; modelId: string } {
@@ -396,18 +416,19 @@ export default function (pi: ExtensionAPI) {
     const active = readManifest();
     if (active.length > 0) {
       const loaded = rebuildContent();
-      ctx.ui.notify(`knowledge-injector active — restored: ${loaded.join(", ")}`, "info");
+      const msg = `knowledge-injector active — restored: ${loaded.join(", ")}`;
+      console.log(`\n ${msg}`);
+      ctx.ui.notify(msg, "info");
       knowledgeDone = true;
       return;
     }
 
     const files = listKnowledgeFiles();
-    ctx.ui.notify(
-      files.length > 0
-        ? `knowledge-injector active — ${files.length} files in ./knowledge/`
-        : "knowledge-injector active — no ./knowledge/ folder found",
-      "info"
-    );
+    const msg = files.length > 0
+      ? `knowledge-injector active — ${files.length} files in ./knowledge/`
+      : "knowledge-injector active — no ./knowledge/ folder found";
+    console.log(`\n ${msg}`);
+    ctx.ui.notify(msg, "info");
   });
 
   // input: user typed first prompt — do ALL LLM work here (distill + select)
@@ -428,14 +449,25 @@ export default function (pi: ExtensionAPI) {
     }
 
     const { baseUrl, modelId } = getModelConfig(pi, ctx);
-    const log = (msg: string) => ctx.ui.notify(`knowledge-injector: ${msg}`, "info");
+    const log = (msg: string) => {
+      const line = `knowledge-injector: ${msg}`;
+      console.log(`\n ${line}`);
+      ctx.ui.notify(line, "info");
+    };
 
     // Step 1: distill large files (sequential LLM calls)
+    log(`scanning ${rawFiles.length} knowledge files...`);
     const files = await buildDescriptions(baseUrl, modelId, rawFiles, log);
 
-    // Step 2: select relevant files (one LLM call)
+    // Step 2: select relevant files (one LLM call per file)
     log(`selecting relevant files for task...`);
-    const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files);
+    const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files, log);
+
+    // Log per-file selection result
+    for (const f of files) {
+      const picked = selected.includes(f.name);
+      log(`  ${picked ? "✓" : "✗"} ${f.name}${picked ? " — selected" : " — skipped"}`);
+    }
 
     if (selected.length === 0) {
       log("selection result: none relevant for this task");
@@ -443,15 +475,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    console.log(`\n  knowledge-injector: picked files → ${selected.join(", ")}\n`);
-    log(`picked files → ${selected.join(", ")}`);
+    log(`selected ${selected.length}/${files.length} files`);
 
     writeManifest(selected.map((n) => n.replace(".md", "")));
     rebuildContent();
+
+    log(`manifest → ${manifestPath()}`);
+    log(`content  → ${contentPath()}`);
+    for (const name of selected) {
+      log(`  loaded: ${path.join(KNOWLEDGE_DIR, name)}`);
+    }
   });
 
   // turn_start: NO LLM calls — just inject already-selected content
-  pi.on("turn_start", async (_event: any, ctx: any) => {
+  pi.on("turn_start", async (_event: any, _ctx: any) => {
     if (!isEnabled() || firstTurnHandled) return;
     firstTurnHandled = true;
 
