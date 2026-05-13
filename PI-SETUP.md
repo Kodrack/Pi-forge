@@ -135,8 +135,8 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 #### `session-manager.ts`
 - **Scope:** `.think/` directory isolation per Pi terminal instance
 - **Hook:** `session_start` (creates new session, updates symlink)
-- **What it does:** each new Pi terminal gets its own `.think/` directory via symlinks under `.think-sessions/`. The model always writes to `.think/` — same hardcoded path, zero overhead. Supports `/resume` to switch between sessions and `/sessions` to list them.
-- **Commands:** `/sessions` (list all), `/resume` (list + pick), `/resume <id>` (switch directly)
+- **What it does:** each new Pi terminal gets its own `.think/` directory via symlinks under `.think-sessions/`. The model always writes to `.think/` — same hardcoded path, zero overhead. Supports `/switch-session` to switch between sessions and `/sessions` to list them.
+- **Commands:** `/sessions` (list all), `/switch-session` (list + pick), `/switch-session <id>` (switch directly)
 - **Migration:** if `.think/` exists as a real directory, it's moved to `.think-sessions/session-001/` automatically
 
 ---
@@ -1022,8 +1022,8 @@ If `.think/` already exists as a real directory (from before this extension was 
 
 ```
 /sessions                   — list all sessions with task name + last-active date
-/resume                     — same list, with instructions to pick one
-/resume session-003         — switch .think/ symlink to that session, inject steer to read _state.md
+/switch-session                     — same list, with instructions to pick one
+/switch-session session-003         — switch .think/ symlink to that session, inject steer to read _state.md
 ```
 
 ### .gitignore
@@ -1132,8 +1132,8 @@ Three real-world prompts tested after full stack was operational:
 | `/piforge enable <name>` | Enable an extension (takes effect next session or after `/reload`) |
 | `/piforge disable <name>` | Disable an extension |
 | `/sessions` | List all `.think/` sessions with task + last-active date |
-| `/resume` | List sessions and pick one to resume |
-| `/resume <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |
+| `/switch-session` | List sessions and pick one to resume |
+| `/switch-session <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |
 | `/forget <name>` | Remove a knowledge file from active set (e.g., `/forget playwright-testing`) |
 | `/forget` | List currently active knowledge files |
 | `/reload` | Hot-reload extensions / skills / settings (no need to quit) |

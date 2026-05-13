@@ -109,7 +109,7 @@ Every time you open a new Pi terminal, `session-manager` creates a fresh directo
 
 If `.think/` already exists as a real directory (from before the extension), it gets migrated automatically into `session-001`.
 
-Commands: `/sessions` (list all), `/resume` (list + pick), `/resume session-001` (switch directly — injects steer to read `_state.md`)
+Commands: `/sessions` (list all), `/switch-session` (list + pick), `/resume session-001` (switch directly — injects steer to read `_state.md`)
 
 ### Purpose anchor (anti-drift after compaction)
 

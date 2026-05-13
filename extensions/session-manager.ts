@@ -170,9 +170,9 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`session-manager: ${id} — .think/ ready`, "info");
   });
 
-  // /resume [session-id] — list or switch sessions
-  pi.registerCommand("resume", {
-    description: "Resume a previous session. Usage: /resume or /resume session-001",
+  // /switch-session [session-id] — list or switch sessions
+  pi.registerCommand("switch-session", {
+    description: "Switch to a previous session. Usage: /switch-session or /switch-session session-001",
     handler: async (args: string, ctx: any) => {
       const index = readIndex();
 
