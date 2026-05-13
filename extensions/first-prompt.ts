@@ -12,7 +12,17 @@ import * as path from "path";
 import * as os from "os";
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
-const APPEND = "\n\nPlan the implementation in numbered steps. Implement ONE step at a time. Don't wait for user input between steps.";
+const APPEND = `
+
+HARD CONSTRAINTS (you will fail if you ignore these):
+1. Your output limit is ~4096 tokens. If you exceed it, generation stops mid-sentence with NO recovery.
+2. NEVER write more than 80 lines in a single response — even in plain text.
+3. For any file > 50 lines: write skeleton first (under 50 lines), then fill in with edit calls.
+4. After EVERY action, update .think/_state.md with what you did and what's next.
+
+Why this matters: If you get cut off mid-file, your next turn won't know where you stopped. The filesystem is your memory — use it.
+
+Plan the implementation in numbered steps. Implement one step at a time — after each step, update _state.md and continue to the next step automatically.`;
 
 function isEnabled(): boolean {
   try {
