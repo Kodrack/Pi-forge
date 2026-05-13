@@ -36,14 +36,13 @@ for f in "$PIFORGE_DIR/extensions/"*.ts; do
 done
 echo "✓ Extensions installed"
 
-# ---------- 4. Copy knowledge files ----------
-mkdir -p "$HOME/.pi/knowledge"
-cp "$PIFORGE_DIR/knowledge/"*.md "$HOME/.pi/knowledge/" 2>/dev/null || true
-echo "✓ Knowledge files installed: ~/.pi/knowledge/"
-for f in "$PIFORGE_DIR/knowledge/"*.md; do
-  [ "$(basename "$f")" = "README.md" ] && continue
-  echo "    ~/.pi/knowledge/$(basename "$f")"
-done
+# ---------- 4. Copy piforge guide ----------
+cp "$PIFORGE_DIR/config/piforge-self.md" "$HOME/.pi/piforge-self.md"
+echo "✓ PiForge guide installed: ~/.pi/piforge-self.md"
+echo ""
+echo "  Knowledge files are now PROJECT-LOCAL."
+echo "  Copy knowledge/*.md to your project's knowledge/ folder:"
+echo "    cp -r $PIFORGE_DIR/knowledge/ <your-project>/knowledge/"
 
 # ---------- 5. Copy skill ----------
 cp "$PIFORGE_DIR/skills/incremental-codegen/SKILL.md" "$PI_DIR/skills/incremental-codegen/SKILL.md"

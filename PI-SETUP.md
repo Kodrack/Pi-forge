@@ -112,7 +112,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 #### `knowledge-injector.ts`
 - **Scope:** turn 1 of every session + after compaction/restart
 - **Hook:** `input` (captures prompt) + `turn_start` (fires isolated LLM call before Pi's main call) + `session_compact` (re-injects from manifest)
-- **What it does:** makes an isolated `fetch()` to Pi's own model/endpoint, asks it which files in `~/.pi/knowledge/` are relevant to the user's task, injects only the selected file content as a steer — selection reasoning never enters Pi's context. Saves selected filenames to `.think/_knowledge-manifest.md`. After compaction or restart, reads the manifest and re-injects from source files — no re-selection needed.
+- **What it does:** makes an isolated `fetch()` to Pi's own model/endpoint, asks it which files in `./knowledge/` are relevant to the user's task, injects only the selected file content as a steer — selection reasoning never enters Pi's context. Saves selected filenames to `.think/_knowledge-manifest.md`. After compaction or restart, reads the manifest and re-injects from source files — no re-selection needed.
 - **Blocks:** code writes (`write`/`edit`) until `.think/_knowledge.md` is created — proof the model processed the injected knowledge
 - **Commands:** `/forget <name>` removes from manifest; `/forget` lists active knowledge
 - **Toggle:** `/piforge enable knowledge-injector` / `/piforge disable knowledge-injector`
@@ -808,7 +808,7 @@ Local 35B models often start implementation immediately without planning. Append
 
 ## 14. Install knowledge-injector extension (inference-time context)
 
-`knowledge-injector.ts` loads tech-specific knowledge files from `~/.pi/knowledge/` at the start of each session — without polluting the context with selection reasoning.
+`knowledge-injector.ts` loads tech-specific knowledge files from `./knowledge/` (project-local) at the start of each session — without polluting the context with selection reasoning.
 
 **How it works:**
 
@@ -826,32 +826,30 @@ cp $(pwd)/extensions/knowledge-injector.ts ~/.pi/agent/extensions/
 
 ### Knowledge folder setup
 
+Knowledge is **project-local**. Each project has its own `knowledge/` folder:
+
 ```bash
-mkdir -p ~/.pi/knowledge
+cp -r $(pwd)/knowledge/ <your-project>/knowledge/
 ```
 
-Place tech-specific knowledge files here. Name them `<tech>-<type>.md`:
-
 ```
-~/.pi/knowledge/
+<your-project>/knowledge/
 ├── svelte5-gotchas.md
-├── astro-gotchas.md
-├── react-hooks.md
-└── ...
+├── drag-and-drop-gotchas.md
+├── canvas-node-editor-gotchas.md
+├── ...
+└── .distilled/                    ← auto-generated summaries for large files
+    └── canvas-node-editor-gotchas.md
 ```
 
-PiForge ships two starter files — copy them during install:
-
-```bash
-cp $(pwd)/knowledge/svelte5-gotchas.md ~/.pi/knowledge/
-cp $(pwd)/knowledge/astro-gotchas.md ~/.pi/knowledge/
-```
+`piforge-self.md` is installed globally to `~/.pi/piforge-self.md` (loaded via `/guide`).
 
 ### Writing knowledge files
 
-- **Name by tech keyword** — `svelte5-gotchas.md` matches tasks mentioning Svelte
+- **Name by tech keyword** — `drag-and-drop-gotchas.md` matches tasks involving drag-and-drop
 - **Failures only** — common mistakes, gotchas, non-obvious behavior. Not tutorials.
-- **Under 500 tokens** — gets injected into context; keep it dense and targeted
+- **Small files (<500 tokens)** — full content sent to selection LLM for maximum signal
+- **Large files (>500 tokens)** — auto-distilled to `.distilled/` subfolder, summary used for selection
 - **One tech per file** — LLM selects by relevance; mixing techs reduces precision
 
 ### Code-write gate
@@ -873,7 +871,7 @@ Then `/reload` to apply, or start a new Pi session.
 When context gets compacted, the injected knowledge is lost from conversation history. But the manifest (`.think/_knowledge-manifest.md`) survives on disk. On `session_compact`, the extension:
 
 1. Reads the manifest (list of active knowledge filenames)
-2. Rebuilds `.think/_knowledge.md` from the source files in `~/.pi/knowledge/`
+2. Rebuilds `.think/_knowledge.md` from the source files in `./knowledge/`
 3. Re-injects the full content as a steer
 
 This is fully programmatic — zero LLM cost. The model gets its knowledge back automatically after every compaction.
@@ -895,7 +893,7 @@ Load PiForge's self-documentation into context on demand:
 /guide    — injects piforge-self.md as a steer, replies "PiForge guide loaded — what do you want to know?"
 ```
 
-The guide file (`piforge-self.md`) lives in `~/.pi/knowledge/` alongside other knowledge files. The difference: `/guide` is explicit on-demand loading, while the knowledge-injector's automatic selection may or may not pick it depending on the task.
+The guide file (`piforge-self.md`) lives at `~/.pi/piforge-self.md` (global, not in project knowledge). `/guide` is explicit on-demand loading — it's never auto-selected by the knowledge-injector.
 
 ---
 
@@ -1302,7 +1300,8 @@ On a fresh machine, in order:
 - [ ] `~/.pi/agent/extensions/loop-guard.ts` created
 - [ ] `~/.pi/agent/extensions/queue.ts` created
 - [ ] `~/.pi/piforge.json` created (`{ "disabled": ["plan-clarify", "explore", "distill-awareness", "loop-guard"] }`)
-- [ ] `~/.pi/knowledge/` directory created with at least one gotchas file
+- [ ] `~/.pi/piforge-self.md` installed (PiForge guide for `/guide` command)
+- [ ] Project `knowledge/` folder created with relevant gotchas files
 - [ ] `pi --list-models` shows the LM Studio models
 - [ ] `pi` boots with all extension notifications (7 active + disabled list)
 - [ ] No skill warnings, no extension errors
@@ -1319,7 +1318,8 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
 │   ├── svelte5-gotchas.md
 │   ├── astro-gotchas.md
 │   ├── playwright-testing.md
-│   └── piforge-self.md
+│   ├── drag-and-drop-gotchas.md
+│   └── canvas-node-editor-gotchas.md
 └── agent/
     ├── models.json
     ├── settings.json

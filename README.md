@@ -22,7 +22,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
-| `knowledge-injector.ts` | Isolated LLM call selects relevant `~/.pi/knowledge/` files, saves manifest, auto re-injects after compaction. `/forget` to remove. | **off** |
+| `knowledge-injector.ts` | Isolated LLM call selects relevant `./knowledge/` files (project-local), saves manifest, auto re-injects after compaction. Distills large files to `.distilled/` subfolder. `/forget` to remove. | **off** |
 
 These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
@@ -199,21 +199,29 @@ Code writes are blocked until `.think/_knowledge.md` is written — proof the mo
 
 Commands: `/forget <name>` (remove knowledge mid-session), `/guide` (load PiForge self-documentation into context on demand)
 
-Included files:
-- `svelte5-gotchas.md` — Svelte 5 runes failure patterns
-- `astro-gotchas.md` — Astro islands, client directives, frontmatter pitfalls
-- `playwright-testing.md` — Playwright waiting, locators, assertions gotchas
-- `piforge-self.md` — PiForge's own stack reference (also loadable via `/guide`)
+Knowledge is **project-local** — each project has its own `knowledge/` folder. Copy the files you need:
 
-Add your own — name by tech, keep under 500 tokens, failures only:
 ```
-~/.pi/knowledge/
+<your-project>/knowledge/
 ├── astro-gotchas.md
 ├── svelte5-gotchas.md
+├── drag-and-drop-gotchas.md
+├── canvas-node-editor-gotchas.md
 ├── playwright-testing.md
-├── piforge-self.md
-└── ...
+└── .distilled/                    ← auto-generated summaries for large files
+    └── ...
 ```
+
+`piforge-self.md` lives at `~/.pi/piforge-self.md` (global, loaded via `/guide`).
+
+Included knowledge files:
+- `svelte5-gotchas.md` — Svelte 5 runes failure patterns
+- `astro-gotchas.md` — Astro islands, client directives, frontmatter pitfalls
+- `drag-and-drop-gotchas.md` — HTML5 drag API, mouse drag, coordinate transforms
+- `canvas-node-editor-gotchas.md` — render order, SVG wires, pan/zoom, ports
+- `playwright-testing.md` — Playwright waiting, locators, assertions gotchas
+
+Add your own — name by tech, failures only. Small files (<500 tokens) get full content sent to selection LLM. Large files get auto-distilled to `.distilled/` subfolder.
 
 ### Project template
 
@@ -347,12 +355,14 @@ piforge/
 │   ├── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
 │   ├── session-manager.ts             ← per-tab .think/ isolation via symlinks
 │   └── queue.ts                       ← /q "message" — post-completion task queue
-├── knowledge/
-│   ├── README.md                       ← how to write knowledge files
+├── knowledge/                          ← copy to your project's knowledge/ folder
 │   ├── svelte5-gotchas.md              ← Svelte 5 runes failure patterns
 │   ├── astro-gotchas.md                ← Astro islands + client directives failure patterns
-│   ├── playwright-testing.md           ← Playwright waiting, locators, assertions gotchas
-│   └── piforge-self.md                 ← PiForge self-documentation (loadable via /guide)
+│   ├── drag-and-drop-gotchas.md        ← HTML5 drag API, mouse drag, coordinate transforms
+│   ├── canvas-node-editor-gotchas.md   ← render order, SVG wires, pan/zoom, ports
+│   └── playwright-testing.md           ← Playwright waiting, locators, assertions gotchas
+├── config/
+│   ├── piforge-self.md                 ← PiForge guide (installed to ~/.pi/, loaded via /guide)
 ├── skills/
 │   └── incremental-codegen/
 │       └── SKILL.md                    ← soft-enforcement skill

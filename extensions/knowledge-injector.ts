@@ -79,24 +79,32 @@ function writeManifest(active: string[]): void {
   fs.writeFileSync(manifestPath(), md);
 }
 
-const DESCRIPTION_CACHE_NAME = ".descriptions.json";
-function descriptionCachePath(): string {
-  return path.join(KNOWLEDGE_DIR, DESCRIPTION_CACHE_NAME);
-}
+const DISTILLED_DIR = path.join(KNOWLEDGE_DIR, ".distilled");
 const TOKEN_THRESHOLD = 2000; // ~500 tokens ≈ 2000 chars
 
-function readDescriptionCache(): Record<string, { description: string; mtime: number }> {
+function ensureDistilledDir(): void {
+  if (!fs.existsSync(DISTILLED_DIR)) fs.mkdirSync(DISTILLED_DIR, { recursive: true });
+}
+
+function distilledPath(fileName: string): string {
+  return path.join(DISTILLED_DIR, fileName);
+}
+
+function readDistilledFile(fileName: string): { description: string; mtime: number } | null {
   try {
-    return JSON.parse(fs.readFileSync(descriptionCachePath(), "utf-8"));
+    const content = fs.readFileSync(distilledPath(fileName), "utf-8");
+    const mtimeMatch = content.match(/^<!-- mtime:(\d+(?:\.\d+)?) -->/);
+    const mtime = mtimeMatch ? parseFloat(mtimeMatch[1]) : 0;
+    const description = content.replace(/^<!-- mtime:\S+ -->\n/, "").trim();
+    return { description, mtime };
   } catch {
-    return {};
+    return null;
   }
 }
 
-function writeDescriptionCache(cache: Record<string, { description: string; mtime: number }>): void {
-  try {
-    fs.writeFileSync(descriptionCachePath(), JSON.stringify(cache, null, 2));
-  } catch {}
+function writeDistilledFile(fileName: string, description: string, mtime: number): void {
+  ensureDistilledDir();
+  fs.writeFileSync(distilledPath(fileName), `<!-- mtime:${mtime} -->\n${description}\n`);
 }
 
 function extractHeaders(content: string): string {
@@ -125,10 +133,10 @@ async function distillFile(
         messages: [
           {
             role: "user",
-            content: `Summarize this knowledge file in ONE line (under 100 words). List the key technologies, patterns, and failure types it covers.\n\nFile: ${fileName}\n\n${content}`,
+            content: `Summarize this knowledge file as a concise reference. Include:\n- Title and what technology/domain it covers\n- Key failure patterns (bullet points)\n- Critical rules to follow\n\nKeep it under 300 words. Use bullet points.\n\nFile: ${fileName}\n\n${content}`,
           },
         ],
-        max_tokens: 80,
+        max_tokens: 400,
         temperature: 0.1,
         stream: false,
       }),
@@ -146,7 +154,7 @@ function listKnowledgeFiles(): Array<{ filePath: string; name: string; descripti
   try {
     return fs
       .readdirSync(KNOWLEDGE_DIR)
-      .filter((f) => f.endsWith(".md") && f !== "README.md")
+      .filter((f) => f.endsWith(".md") && f !== "README.md" && !f.startsWith("."))
       .map((f) => {
         const filePath = path.join(KNOWLEDGE_DIR, f);
         const content = fs.readFileSync(filePath, "utf-8");
@@ -163,18 +171,15 @@ async function buildDescriptions(
   files: Array<{ filePath: string; name: string; content?: string }>,
   log?: (msg: string) => void
 ): Promise<Array<{ filePath: string; name: string; description: string; content?: string }>> {
-  const cache = readDescriptionCache();
-  let cacheUpdated = false;
-
   const result = [];
   for (const f of files) {
     const content = f.content ?? fs.readFileSync(f.filePath, "utf-8");
     const mtime = fs.statSync(f.filePath).mtimeMs;
-    const cached = cache[f.name];
+    const cached = readDistilledFile(f.name);
 
-    // Cache hit — file hasn't changed
+    // Cache hit — source file hasn't changed
     if (cached && Math.abs(cached.mtime - mtime) < 1000) {
-      log?.(`  ${f.name} — cached`);
+      log?.(`  ${f.name} — cached (.distilled/${f.name})`);
       result.push({ filePath: f.filePath, name: f.name, description: cached.description, content });
       continue;
     }
@@ -187,15 +192,13 @@ async function buildDescriptions(
       log?.(`  ${f.name} — large (${content.length} chars), distilling...`);
       description = await distillFile(baseUrl, modelId, f.name, content);
       if (!description) description = extractHeaders(content);
-      log?.(`  ${f.name} — distilled: "${description.substring(0, 60)}..."`);
+      log?.(`  ${f.name} — distilled → .distilled/${f.name}`);
     }
 
-    cache[f.name] = { description, mtime };
-    cacheUpdated = true;
+    writeDistilledFile(f.name, description, mtime);
     result.push({ filePath: f.filePath, name: f.name, description, content });
   }
 
-  if (cacheUpdated) writeDescriptionCache(cache);
   return result;
 }
 
@@ -515,9 +518,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("guide", {
     description: "Load the PiForge guide into context",
     handler: async (_args: string, ctx: any) => {
-      const guidePath = path.join(KNOWLEDGE_DIR, "piforge-self.md");
+      const guidePath = path.join(os.homedir(), ".pi", "piforge-self.md");
       if (!fs.existsSync(guidePath)) {
-        ctx.ui.notify("knowledge-injector: piforge-self.md not found in ./knowledge/", "error");
+        ctx.ui.notify("knowledge-injector: piforge-self.md not found in ~/.pi/", "error");
         return;
       }
 
