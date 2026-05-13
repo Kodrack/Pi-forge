@@ -49,7 +49,7 @@ This setup uses three layers, weakest to strongest:
 
 | Extension | What it guards | Trigger |
 |---|---|---|
-| `incremental-guard.ts` | write/edit tool call size | Rejects calls > 100 lines / 6000 chars |
+| `incremental-guard.ts` | write/edit tool call size | Rejects writes > 100 lines/6000 chars; edits > 60 lines/3000 chars |
 | `thinking-guard.ts` | reasoning/thinking block length | Injects correction if thinking > 2000 chars |
 | `context-monitor.ts` | context window fill | Steers model to write state at 65%, urgent at 80% |
 | `analysis-guard.ts` | long responses with no file write | Forces step file write after any analysis > 1000 chars |
@@ -61,7 +61,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 #### `incremental-guard.ts`
 - **Scope:** `write` and `edit` tool calls only
 - **Hook:** `tool_call` event — fires before the call executes
-- **Blocks:** write > 100 lines or 6000 chars; edit new_string > 100 lines or 6000 chars; edit old_string > 160 lines (whole-file-via-edit trick)
+- **Blocks:** write > 100 lines or 6000 chars; edit new_string > 60 lines or 3000 chars; edit old_string > 120 lines (whole-file-via-edit trick)
 - **Exempt:** lockfiles, `.svg`, `.lock` files (configurable)
 - **On block:** sends a structured error with exact replan instructions — model must split work and retry
 - **Command:** `/guard`

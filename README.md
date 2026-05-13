@@ -14,7 +14,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects write/edit calls > 100 lines or 6000 chars — forces skeleton → edit workflow | on |
+| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars — forces skeleton → small edit workflow | on |
 | `thinking-guard.ts` | Injects correction when thinking block > 2000 chars — stops reasoning spirals | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, urgent at 80% | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |

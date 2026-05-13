@@ -13,8 +13,9 @@ import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 
 // ---------- LIMITS (tune these as needed) ----------
 const MAX_LINES_PER_WRITE = 100;      // skeleton scaffold cap
-const MAX_LINES_PER_EDIT  = 100;      // single-feature edit cap
-const MAX_CHARS_PER_CALL  = 6000;     // ~1500 tokens, regardless of line count
+const MAX_LINES_PER_EDIT  = 60;       // single-feature edit cap
+const MAX_CHARS_PER_WRITE = 6000;     // ~1500 tokens for new files
+const MAX_CHARS_PER_EDIT  = 3000;     // ~750 tokens — forces small targeted edits
 
 // Files exempt from the cap (config files, lockfiles, etc. that legitimately
 // need to be written wholesale). Add more globs here if needed.
@@ -44,7 +45,7 @@ function charCount(s?: string): number {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(
-      `incremental-guard active (max ${MAX_LINES_PER_WRITE} lines / ${MAX_CHARS_PER_CALL} chars per write/edit)`,
+      `incremental-guard active (write: ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, edit: ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars)`,
       "info"
     );
   });
@@ -64,12 +65,12 @@ export default function (pi: ExtensionAPI) {
       const lines = lineCount(content);
       const chars = charCount(content);
 
-      if (lines > MAX_LINES_PER_WRITE || chars > MAX_CHARS_PER_CALL) {
+      if (lines > MAX_LINES_PER_WRITE || chars > MAX_CHARS_PER_WRITE) {
         return {
           block: true,
           reason:
             `write rejected: ${lines} lines / ${chars} chars exceeds limit ` +
-            `(${MAX_LINES_PER_WRITE} lines / ${MAX_CHARS_PER_CALL} chars). ` +
+            `(${MAX_LINES_PER_WRITE} lines / ${MAX_CHARS_PER_WRITE} chars). ` +
             `Do NOT retry with the same payload. Instead: ` +
             `(1) write a SHORT plan to _plan.md listing each feature as a numbered TODO, ` +
             `(2) write a SKELETON file with empty <!-- TODO: name --> markers (under ${MAX_LINES_PER_WRITE} lines), ` +
@@ -98,12 +99,12 @@ export default function (pi: ExtensionAPI) {
       const newLines = lineCount(newS);
       const newChars = charCount(newS);
 
-      if (newLines > MAX_LINES_PER_EDIT || newChars > MAX_CHARS_PER_CALL) {
+      if (newLines > MAX_LINES_PER_EDIT || newChars > MAX_CHARS_PER_EDIT) {
         return {
           block: true,
           reason:
             `edit rejected: replacement is ${newLines} lines / ${newChars} chars ` +
-            `(limit ${MAX_LINES_PER_EDIT} lines / ${MAX_CHARS_PER_CALL} chars). ` +
+            `(limit ${MAX_LINES_PER_EDIT} lines / ${MAX_CHARS_PER_EDIT} chars). ` +
             `Do NOT retry with the same payload. Split this change into multiple ` +
             `smaller 'edit' calls — one feature/section per call. ` +
             `If you're tempted to rewrite a whole file, you're doing it wrong: ` +
@@ -133,8 +134,8 @@ export default function (pi: ExtensionAPI) {
     description: "Show or toggle incremental-guard limits",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `incremental-guard: write ≤ ${MAX_LINES_PER_WRITE} lines, ` +
-          `edit ≤ ${MAX_LINES_PER_EDIT} lines, both ≤ ${MAX_CHARS_PER_CALL} chars. ` +
+        `incremental-guard: write ≤ ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, ` +
+          `edit ≤ ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars. ` +
           `Edit ~/.pi/agent/extensions/incremental-guard.ts to change.`,
         "info"
       );

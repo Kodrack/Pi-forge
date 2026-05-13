@@ -76,16 +76,118 @@ function writeManifest(active: string[]): void {
   fs.writeFileSync(manifestPath(), md);
 }
 
-function listKnowledgeFiles(): Array<{ filePath: string; name: string }> {
+const DESCRIPTION_CACHE = path.join(KNOWLEDGE_DIR, ".descriptions.json");
+const TOKEN_THRESHOLD = 2000; // ~500 tokens ≈ 2000 chars
+
+function readDescriptionCache(): Record<string, { description: string; mtime: number }> {
+  try {
+    return JSON.parse(fs.readFileSync(DESCRIPTION_CACHE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeDescriptionCache(cache: Record<string, { description: string; mtime: number }>): void {
+  try {
+    fs.writeFileSync(DESCRIPTION_CACHE, JSON.stringify(cache, null, 2));
+  } catch {}
+}
+
+function extractHeaders(content: string): string {
+  const title = (content.split("\n")[0] ?? "").replace(/^#+\s*/, "").trim();
+  const headers = content
+    .split("\n")
+    .filter((l) => l.startsWith("## "))
+    .map((l) => l.replace(/^##\s*/, "").trim())
+    .slice(0, 6);
+  const topics = headers.length > 0 ? ` | topics: ${headers.join(", ")}` : "";
+  return `${title}${topics}`;
+}
+
+async function distillFile(
+  baseUrl: string,
+  modelId: string,
+  fileName: string,
+  content: string
+): Promise<string> {
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          {
+            role: "user",
+            content: `Summarize this knowledge file in ONE line (under 100 words). List the key technologies, patterns, and failure types it covers.\n\nFile: ${fileName}\n\n${content}`,
+          },
+        ],
+        max_tokens: 80,
+        temperature: 0.1,
+        stream: false,
+      }),
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as any;
+    return (data?.choices?.[0]?.message?.content ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function listKnowledgeFiles(): Array<{ filePath: string; name: string; description: string; content: string }> {
   if (!fs.existsSync(KNOWLEDGE_DIR)) return [];
   try {
     return fs
       .readdirSync(KNOWLEDGE_DIR)
       .filter((f) => f.endsWith(".md") && f !== "README.md")
-      .map((f) => ({ filePath: path.join(KNOWLEDGE_DIR, f), name: f }));
+      .map((f) => {
+        const filePath = path.join(KNOWLEDGE_DIR, f);
+        const content = fs.readFileSync(filePath, "utf-8");
+        return { filePath, name: f, content, description: "" };
+      });
   } catch {
     return [];
   }
+}
+
+async function buildDescriptions(
+  baseUrl: string,
+  modelId: string,
+  files: Array<{ filePath: string; name: string; content?: string }>
+): Promise<Array<{ filePath: string; name: string; description: string; content?: string }>> {
+  const cache = readDescriptionCache();
+  let cacheUpdated = false;
+
+  const result = [];
+  for (const f of files) {
+    const content = f.content ?? fs.readFileSync(f.filePath, "utf-8");
+    const mtime = fs.statSync(f.filePath).mtimeMs;
+    const cached = cache[f.name];
+
+    // Cache hit — file hasn't changed
+    if (cached && Math.abs(cached.mtime - mtime) < 1000) {
+      result.push({ filePath: f.filePath, name: f.name, description: cached.description, content });
+      continue;
+    }
+
+    let description: string;
+    if (content.length <= TOKEN_THRESHOLD) {
+      // Small file — no description needed, full content goes to selection LLM
+      description = extractHeaders(content);
+    } else {
+      // Large file — isolated LLM distill
+      description = await distillFile(baseUrl, modelId, f.name, content);
+      if (!description) description = extractHeaders(content);
+    }
+
+    cache[f.name] = { description, mtime };
+    cacheUpdated = true;
+    result.push({ filePath: f.filePath, name: f.name, description, content });
+  }
+
+  if (cacheUpdated) writeDescriptionCache(cache);
+  return result;
 }
 
 // Rebuild _knowledge.md from manifest + source files. Returns loaded names.
@@ -134,10 +236,20 @@ async function selectRelevantFiles(
   baseUrl: string,
   modelId: string,
   userPrompt: string,
-  files: Array<{ name: string }>
+  files: Array<{ name: string; description: string; content?: string }>
 ): Promise<string[]> {
   if (files.length === 0) return [];
-  const fileList = files.map((f, i) => `${i + 1}. ${f.name}`).join("\n");
+
+  // For small files (under ~500 tokens), include full content so the LLM
+  // can judge relevance from actual failure patterns, not just headers.
+  // The call is isolated — no context pollution, and small files are cheap.
+  const fileSections = files.map((f, i) => {
+    const header = `${i + 1}. ${f.name}`;
+    if (f.content && f.content.length <= TOKEN_THRESHOLD) {
+      return `${header}\n<content>\n${f.content}\n</content>`;
+    }
+    return `${header}${f.description ? ` — ${f.description}` : ""}`;
+  }).join("\n\n");
 
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -151,9 +263,9 @@ async function selectRelevantFiles(
             content: `Task: "${userPrompt}"
 
 Available knowledge files:
-${fileList}
+${fileSections}
 
-Which of these files contain failure patterns relevant to this task?
+Which files are relevant to this task? Think about what technologies and patterns this task involves.
 Reply with ONLY the relevant filenames, one per line.
 If none are relevant, reply: none`,
           },
@@ -244,13 +356,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Fresh session — isolated LLM call to select
-    const files = listKnowledgeFiles();
-    if (files.length === 0) return;
+    // Fresh session — build descriptions + isolated LLM call to select
+    const rawFiles = listKnowledgeFiles();
+    if (rawFiles.length === 0) return;
 
     const { baseUrl, modelId } = getModelConfig(pi, ctx);
-    ctx.ui.notify(`knowledge-injector: selecting from ${files.length} files via isolated call...`, "info");
+    ctx.ui.notify(`knowledge-injector: selecting from ${rawFiles.length} files via isolated call...`, "info");
 
+    const files = await buildDescriptions(baseUrl, modelId, rawFiles);
     const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files);
     if (selected.length === 0) {
       ctx.ui.notify("knowledge-injector: no relevant files for this task", "info");
