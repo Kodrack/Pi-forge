@@ -879,6 +879,16 @@ Remove a knowledge file from the active set mid-session:
 /forget                       — shows currently active knowledge
 ```
 
+### `/guide` command
+
+Load PiForge's self-documentation into context on demand:
+
+```
+/guide    — injects piforge-self.md as a steer, replies "PiForge guide loaded — what do you want to know?"
+```
+
+The guide file (`piforge-self.md`) lives in `~/.pi/knowledge/` alongside other knowledge files. The difference: `/guide` is explicit on-demand loading, while the knowledge-injector's automatic selection may or may not pick it depending on the task.
+
 ---
 
 ## 15. Install plan-clarify extension (clarifying questions)
@@ -1136,6 +1146,10 @@ Three real-world prompts tested after full stack was operational:
 | `/switch-session <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |
 | `/forget <name>` | Remove a knowledge file from active set (e.g., `/forget playwright-testing`) |
 | `/forget` | List currently active knowledge files |
+| `/guide` | Load PiForge self-documentation into context on demand |
+| `/q "message"` | Queue work for after Pi finishes current task |
+| `/q` | Show queued messages |
+| `/q clear` | Clear the queue |
 | `/reload` | Hot-reload extensions / skills / settings (no need to quit) |
 | `/usage` | Show tokens per turn — verify calls stay small |
 | `/tree` | Show full event tree (tool calls, thinking, results) |

@@ -381,4 +381,28 @@ export default function (pi: ExtensionAPI) {
       );
     },
   });
+
+  // /guide — load piforge-self.md on demand
+  pi.registerCommand("guide", {
+    description: "Load the PiForge guide into context",
+    handler: async (_args: string, ctx: any) => {
+      const guidePath = path.join(KNOWLEDGE_DIR, "piforge-self.md");
+      if (!fs.existsSync(guidePath)) {
+        ctx.ui.notify("knowledge-injector: piforge-self.md not found in ~/.pi/knowledge/", "error");
+        return;
+      }
+
+      const content = fs.readFileSync(guidePath, "utf-8").trim();
+      ctx.ui.notify("knowledge-injector: PiForge guide loaded", "info");
+
+      await pi.sendMessage(
+        {
+          customType: "knowledge_guide",
+          content: `[knowledge-injector] PiForge guide loaded:\n\n${content}\n\nPiForge guide loaded — what do you want to know?`,
+          display: { label: "knowledge-injector", content: "PiForge guide loaded" },
+        },
+        { deliverAs: "steer" }
+      );
+    },
+  });
 }

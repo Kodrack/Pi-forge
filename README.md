@@ -109,7 +109,7 @@ Every time you open a new Pi terminal, `session-manager` creates a fresh directo
 
 If `.think/` already exists as a real directory (from before the extension), it gets migrated automatically into `session-001`.
 
-Commands: `/sessions` (list all), `/switch-session` (list + pick), `/resume session-001` (switch directly — injects steer to read `_state.md`)
+Commands: `/sessions` (list all), `/switch-session [session-id]` (switch to a previous session)
 
 ### Purpose anchor (anti-drift after compaction)
 
@@ -124,6 +124,21 @@ When context gets compacted, Pi can lose track of the original goal. `purpose-an
 4. Pi re-orients and continues without drift
 
 Commands: `/purpose` (view/set), `/purpose-clear` (reset)
+
+### Task queue (post-completion delivery)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `queue.ts` | `/q "message"` queues work for after Pi finishes — delivered as a fresh turn, not a steer | on |
+
+Queue messages while Pi is working. Each item is delivered one at a time after Pi completes a turn — Pi fully finishes one queued task before starting the next. No context pollution: queued messages don't exist in context until Pi is idle.
+
+```
+/q "now run the tests"          # queue a task
+/q "then update the README"     # queue another
+/q                              # show the queue
+/q clear                        # clear all queued items
+```
 
 ### 1 soft-enforcement skill
 
@@ -145,16 +160,21 @@ Selected filenames are saved to `.think/_knowledge-manifest.md`. After compactio
 
 Code writes are blocked until `.think/_knowledge.md` is written — proof the model absorbed the knowledge.
 
-Included samples:
+Commands: `/forget <name>` (remove knowledge mid-session), `/guide` (load PiForge self-documentation into context on demand)
+
+Included files:
 - `svelte5-gotchas.md` — Svelte 5 runes failure patterns
 - `astro-gotchas.md` — Astro islands, client directives, frontmatter pitfalls
+- `playwright-testing.md` — Playwright waiting, locators, assertions gotchas
+- `piforge-self.md` — PiForge's own stack reference (also loadable via `/guide`)
 
 Add your own — name by tech, keep under 500 tokens, failures only:
 ```
 ~/.pi/knowledge/
 ├── astro-gotchas.md
 ├── svelte5-gotchas.md
-├── react-hooks.md
+├── playwright-testing.md
+├── piforge-self.md
 └── ...
 ```
 
@@ -287,11 +307,14 @@ piforge/
 │   ├── explore.ts                      ← /explore + explore_codebase tool (off by default)
 │   ├── distill-awareness.ts            ← session-start awareness (off by default)
 │   ├── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
-│   └── session-manager.ts             ← per-tab .think/ isolation via symlinks
+│   ├── session-manager.ts             ← per-tab .think/ isolation via symlinks
+│   └── queue.ts                       ← /q "message" — post-completion task queue
 ├── knowledge/
 │   ├── README.md                       ← how to write knowledge files
 │   ├── svelte5-gotchas.md              ← Svelte 5 runes failure patterns
-│   └── astro-gotchas.md                ← Astro islands + client directives failure patterns
+│   ├── astro-gotchas.md                ← Astro islands + client directives failure patterns
+│   ├── playwright-testing.md           ← Playwright waiting, locators, assertions gotchas
+│   └── piforge-self.md                 ← PiForge self-documentation (loadable via /guide)
 ├── skills/
 │   └── incremental-codegen/
 │       └── SKILL.md                    ← soft-enforcement skill
