@@ -293,19 +293,17 @@ async function selectRelevantFile(
     ? file.content
     : file.description;
 
-  const prompt = `PURPOSE: "${userPrompt}"
+  const prompt = `TASK: ${userPrompt}
 
 FILE: ${file.name}
 ${fileContent}
 
-Is this file relevant to the purpose?
+1. What technology does this file cover?
+2. What technology does the task require?
+3. Are they the same domain?
 
-Cost of including an irrelevant file: ~500 tokens (cheap).
-Cost of missing a relevant file: hours of debugging (expensive).
-
-When uncertain, answer YES.
-
-Answer only YES or NO.`;
+Answer YES only if the file's technology is needed for the task.
+Otherwise NO.`;
 
   fs.writeFileSync(promptFile, prompt, "utf8");
   log?.(`  ${file.name} — evaluating...`);
@@ -317,13 +315,13 @@ Answer only YES or NO.`;
     );
     const reply = (stdout || "").trim().toUpperCase();
 
-    // Parse response - look for YES/NO, default to YES if unclear
-    const isYes = reply.includes("YES") || (!reply.includes("NO") && reply.length < 20);
+    // Parse response - default to NO (conservative: user can always add files manually)
+    const isYes = reply.includes("YES") && !reply.includes("NO");
     log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 50)}" → ${isYes ? "YES" : "NO"}`);
     return isYes;
   } catch (err: any) {
-    log?.(`  ${file.name} — selection error: ${err.message}, defaulting to YES`);
-    return true; // Default to include on error
+    log?.(`  ${file.name} — selection error: ${err.message}, skipping`);
+    return false; // Default to exclude on error
   } finally {
     try { fs.unlinkSync(promptFile); } catch {}
   }
@@ -363,19 +361,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const active = readManifest();
-    if (active.length > 0) {
-      const loaded = rebuildContent();
-      const msg = `knowledge-injector active — restored: ${loaded.join(", ")}`;
-      console.log(`\n ${msg}`);
-      ctx.ui.notify(msg, "info");
-      knowledgeDone = true;
-      return;
-    }
+    // IMPORTANT: Don't restore from manifest on session_start.
+    // The session-manager may not have created the new session yet,
+    // so .think/ might still point to an OLD session's manifest.
+    // Fresh selection happens in "input" handler after user's first prompt.
 
     const files = listKnowledgeFiles();
     const msg = files.length > 0
-      ? `knowledge-injector active — ${files.length} files in ./knowledge/`
+      ? `knowledge-injector ready — ${files.length} files in ./knowledge/ (selection on first prompt)`
       : "knowledge-injector active — no ./knowledge/ folder found";
     console.log(`\n ${msg}`);
     ctx.ui.notify(msg, "info");
@@ -383,6 +376,7 @@ export default function (pi: ExtensionAPI) {
 
   // input: user typed first prompt — do ALL LLM work here (distill + select)
   // LM Studio is idle, Pi hasn't started its turn yet
+  // By this point, session-manager has already created a fresh .think/ folder
   pi.on("input", async (event: any, ctx: any) => {
     lastUserPrompt = event.text ?? "";
 
@@ -390,7 +384,11 @@ export default function (pi: ExtensionAPI) {
     knowledgeDone = true;
 
     if (!isEnabled()) return;
-    if (readManifest().length > 0) return;
+
+    // IMMEDIATELY clear old manifest before any async work
+    // This prevents turn_start from reading stale data during selection
+    try { fs.unlinkSync(manifestPath()); } catch {}
+    try { fs.unlinkSync(contentPath()); } catch {}
 
     const rawFiles = listKnowledgeFiles();
     if (rawFiles.length === 0) {
