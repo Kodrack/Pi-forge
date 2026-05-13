@@ -2,7 +2,7 @@
 // Inference-time knowledge injection with compaction survival.
 //
 // Session start (turn 1):
-//   1. Isolated LLM call selects relevant files from ~/.pi/knowledge/
+//   1. Isolated LLM call selects relevant files from <project>/knowledge/
 //   2. Saves selected filenames to .think/_knowledge-manifest.md (manifest)
 //   3. Builds .think/_knowledge.md from source files (full content)
 //   4. Injects content as steer — model gets knowledge on first LLM call
@@ -16,7 +16,10 @@
 //
 // The manifest on disk is the source of truth. It survives compaction,
 // session restarts, and context loss. The full content is always rebuilt
-// fresh from ~/.pi/knowledge/ source files.
+// fresh from <project>/knowledge/ source files.
+//
+// Knowledge folder is PROJECT-LOCAL: <cwd>/knowledge/
+// Each project has its own knowledge files relevant to its tech stack.
 //
 // Commands: /forget <name> — remove a knowledge file from the active set
 //
@@ -27,7 +30,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-const KNOWLEDGE_DIR = path.join(os.homedir(), ".pi", "knowledge");
+const KNOWLEDGE_DIR = path.join(process.cwd(), "knowledge");
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
 
 // ---------- HELPERS ----------
@@ -76,12 +79,15 @@ function writeManifest(active: string[]): void {
   fs.writeFileSync(manifestPath(), md);
 }
 
-const DESCRIPTION_CACHE = path.join(KNOWLEDGE_DIR, ".descriptions.json");
+const DESCRIPTION_CACHE_NAME = ".descriptions.json";
+function descriptionCachePath(): string {
+  return path.join(KNOWLEDGE_DIR, DESCRIPTION_CACHE_NAME);
+}
 const TOKEN_THRESHOLD = 2000; // ~500 tokens ≈ 2000 chars
 
 function readDescriptionCache(): Record<string, { description: string; mtime: number }> {
   try {
-    return JSON.parse(fs.readFileSync(DESCRIPTION_CACHE, "utf-8"));
+    return JSON.parse(fs.readFileSync(descriptionCachePath(), "utf-8"));
   } catch {
     return {};
   }
@@ -89,7 +95,7 @@ function readDescriptionCache(): Record<string, { description: string; mtime: nu
 
 function writeDescriptionCache(cache: Record<string, { description: string; mtime: number }>): void {
   try {
-    fs.writeFileSync(DESCRIPTION_CACHE, JSON.stringify(cache, null, 2));
+    fs.writeFileSync(descriptionCachePath(), JSON.stringify(cache, null, 2));
   } catch {}
 }
 
@@ -154,7 +160,8 @@ function listKnowledgeFiles(): Array<{ filePath: string; name: string; descripti
 async function buildDescriptions(
   baseUrl: string,
   modelId: string,
-  files: Array<{ filePath: string; name: string; content?: string }>
+  files: Array<{ filePath: string; name: string; content?: string }>,
+  log?: (msg: string) => void
 ): Promise<Array<{ filePath: string; name: string; description: string; content?: string }>> {
   const cache = readDescriptionCache();
   let cacheUpdated = false;
@@ -167,18 +174,20 @@ async function buildDescriptions(
 
     // Cache hit — file hasn't changed
     if (cached && Math.abs(cached.mtime - mtime) < 1000) {
+      log?.(`  ${f.name} — cached`);
       result.push({ filePath: f.filePath, name: f.name, description: cached.description, content });
       continue;
     }
 
     let description: string;
     if (content.length <= TOKEN_THRESHOLD) {
-      // Small file — no description needed, full content goes to selection LLM
       description = extractHeaders(content);
+      log?.(`  ${f.name} — small (${content.length} chars), full content to selection`);
     } else {
-      // Large file — isolated LLM distill
+      log?.(`  ${f.name} — large (${content.length} chars), distilling...`);
       description = await distillFile(baseUrl, modelId, f.name, content);
       if (!description) description = extractHeaders(content);
+      log?.(`  ${f.name} — distilled: "${description.substring(0, 60)}..."`);
     }
 
     cache[f.name] = { description, mtime };
@@ -322,8 +331,8 @@ export default function (pi: ExtensionAPI) {
       const files = listKnowledgeFiles();
       ctx.ui.notify(
         files.length > 0
-          ? `knowledge-injector active — ${files.length} knowledge files available`
-          : "knowledge-injector active — no files in ~/.pi/knowledge/",
+          ? `knowledge-injector active — ${files.length} files in ./knowledge/`
+          : "knowledge-injector active — no ./knowledge/ folder found",
         "info"
       );
     }
@@ -358,25 +367,32 @@ export default function (pi: ExtensionAPI) {
 
     // Fresh session — build descriptions + isolated LLM call to select
     const rawFiles = listKnowledgeFiles();
-    if (rawFiles.length === 0) return;
+    if (rawFiles.length === 0) {
+      ctx.ui.notify("knowledge-injector: no files in ./knowledge/", "info");
+      return;
+    }
 
     const { baseUrl, modelId } = getModelConfig(pi, ctx);
-    ctx.ui.notify(`knowledge-injector: selecting from ${rawFiles.length} files via isolated call...`, "info");
+    const log = (msg: string) => ctx.ui.notify(`knowledge-injector: ${msg}`, "info");
+    log(`scanning ${rawFiles.length} files in ./knowledge/`);
 
-    const files = await buildDescriptions(baseUrl, modelId, rawFiles);
+    const files = await buildDescriptions(baseUrl, modelId, rawFiles, log);
+    log(`descriptions ready — asking LLM to select relevant files...`);
+
     const selected = await selectRelevantFiles(baseUrl, modelId, lastUserPrompt, files);
     if (selected.length === 0) {
-      ctx.ui.notify("knowledge-injector: no relevant files for this task", "info");
+      log("selection result: none relevant for this task");
       knowledgeAcknowledged = true;
       return;
     }
+
+    const skipped = files.filter(f => !selected.includes(f.name)).map(f => f.name);
+    log(`selected: ${selected.join(", ")}${skipped.length > 0 ? ` | skipped: ${skipped.join(", ")}` : ""}`);
 
     // Save to manifest + build content
     writeManifest(selected.map((n) => n.replace(".md", "")));
     const loaded = rebuildContent();
     const content = buildSteerContent();
-
-    ctx.ui.notify(`knowledge-injector: selected → ${loaded.join(", ")}`, "info");
 
     if (content) {
       await pi.sendMessage(
@@ -501,7 +517,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args: string, ctx: any) => {
       const guidePath = path.join(KNOWLEDGE_DIR, "piforge-self.md");
       if (!fs.existsSync(guidePath)) {
-        ctx.ui.notify("knowledge-injector: piforge-self.md not found in ~/.pi/knowledge/", "error");
+        ctx.ui.notify("knowledge-injector: piforge-self.md not found in ./knowledge/", "error");
         return;
       }
 

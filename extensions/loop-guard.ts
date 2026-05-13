@@ -1,6 +1,8 @@
 // loop-guard.ts
 // Detects and breaks repetition loops using Jaccard similarity.
+// Also detects malformed tool call loops (empty/invalid arguments).
 //
+// --- Write loop detection (Jaccard) ---
 // Tracks write/edit tool calls per file path. If the same file is written
 // with content similarity > 0.85 (Jaccard on word sets), escalates:
 //
@@ -9,6 +11,14 @@
 //   3 blocked attempts → abort + compact (clean context, _state.md survives)
 //   loops AGAIN after  → abort + double compact (nuclear — near-empty context)
 //   STILL loops        → notify user to /clear
+//
+// --- Malformed tool call detection ---
+// Tracks consecutive tool calls with missing/empty required arguments.
+// Q2 models sometimes emit {} or omit required fields repeatedly:
+//
+//   4 consecutive malformed → warning steer with concrete alternative
+//   8 consecutive malformed → abort + compact (clear poisoned context)
+//   still failing after     → escalate same as write loops
 //
 // Zero inference cost — pure string math (Set intersection/union).
 // Works with any harness (LM Studio, Ollama, vLLM, llama.cpp).
@@ -39,6 +49,10 @@ const WARN_COUNT = 4;
 const BLOCK_COUNT = 6;
 const MAX_HISTORY = 10;
 
+// Malformed tool call thresholds
+const MALFORMED_WARN = 4;
+const MALFORMED_COMPACT = 8;
+
 interface WriteEntry {
   words: Set<string>;
   turn: number;
@@ -50,6 +64,7 @@ let interventionCount = 0;
 let compactCount = 0;
 let lastBlockedPath = "";
 let recovering = false;
+let malformedCount = 0;
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -89,10 +104,20 @@ function getEscapeHint(filePath: string): string {
   return "You are writing the same content repeatedly. STOP. Try a different approach: break the file into smaller pieces, use edit instead of write, or ask the user for help.";
 }
 
+function isMalformed(toolName: string, input: Record<string, any>): boolean {
+  if (!input || Object.keys(input).length === 0) return true;
+  if (toolName === "bash" && !input.command) return true;
+  if (toolName === "write" && !input.content && !input.file_path && !input.path) return true;
+  if (toolName === "edit" && !input.new_string && !input.old_string) return true;
+  if (toolName === "read" && !input.file_path && !input.path) return true;
+  return false;
+}
+
 function resetState(): void {
   fileHistory.clear();
   interventionCount = 0;
   lastBlockedPath = "";
+  malformedCount = 0;
 }
 
 async function doCompact(ctx: any, instructions: string): Promise<void> {
@@ -192,9 +217,40 @@ export default function (pi: ExtensionAPI) {
     if (!isEnabled() || recovering) return;
 
     const toolName = (event as any).toolName ?? "";
-    if (toolName !== "write" && toolName !== "edit") return;
-
     const input = (event as any).input as Record<string, any>;
+
+    // --- MALFORMED TOOL CALL DETECTION ---
+    if (isMalformed(toolName, input)) {
+      malformedCount++;
+
+      if (malformedCount >= MALFORMED_COMPACT) {
+        ctx.ui.notify(`loop-guard: ${malformedCount} consecutive malformed calls — compacting`, "warn");
+        setTimeout(() => recover(pi, ctx), 100);
+        return;
+      }
+
+      if (malformedCount >= MALFORMED_WARN) {
+        await pi.sendMessage(
+          {
+            customType: "malformed_warning",
+            content: `[loop-guard] Your last ${malformedCount} tool calls had empty or missing arguments. ` +
+              `STOP retrying the same call. Try a different approach: ` +
+              `use 'write' or 'edit' instead of 'bash', avoid paths with spaces, ` +
+              `keep arguments simple. If you need to run a command, make sure the 'command' field is set.`,
+            display: {
+              label: "loop-guard",
+              content: `${malformedCount} consecutive malformed tool calls`,
+            },
+          },
+          { deliverAs: "steer" }
+        );
+      }
+      return;
+    }
+    // Valid call — reset malformed counter
+    malformedCount = 0;
+
+    if (toolName !== "write" && toolName !== "edit") return;
     const filePath: string = input?.path ?? input?.file_path ?? "";
     const content: string = input?.content ?? input?.new_string ?? "";
 

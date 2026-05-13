@@ -141,11 +141,11 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **Migration:** if `.think/` exists as a real directory, it's moved to `.think-sessions/session-001/` automatically
 
 #### `loop-guard.ts`
-- **Scope:** write/edit tool calls — tracks per-file content similarity
-- **Hook:** `tool_call` (compares content via Jaccard similarity on word sets)
-- **What it does:** detects when the model writes the same file with nearly identical content repeatedly. Escalates from warning → block → auto-compact → double compact → tell user to `/clear`. Zero inference cost — pure string math.
+- **Scope:** write/edit tool calls (content similarity) + ALL tool calls (malformed argument detection)
+- **Hook:** `tool_call` — Jaccard similarity on word sets for writes, empty/missing field check for all calls
+- **What it does:** two detectors: (1) repeated writes to the same file with >85% similarity → escalate from warning to auto-compact. (2) consecutive malformed tool calls (empty `{}` arguments, missing required fields) → warn at 4, compact at 8. Both share the same recovery ladder: compact → double compact → tell user to `/clear`. Zero inference cost.
 - **Default:** disabled — the primary defense is LM Studio inference settings (repeat penalty). Enable with `/piforge enable loop-guard`
-- **Why it exists:** without repeat penalty, Q2 models fall into loops writing `_state.md` 20+ times with identical content, burning context doing nothing. This catches the symptom regardless of which inference harness is used.
+- **Why it exists:** without repeat penalty, Q2 models loop on identical writes. They also sometimes emit malformed tool calls repeatedly (can't format JSON for paths with spaces), poisoning context with failures. This catches both patterns regardless of inference harness.
 
 ---
 
@@ -1050,9 +1050,9 @@ The extension auto-appends `.think/` and `.think-sessions/` to `.gitignore` on f
 
 ---
 
-## 18. Install loop-guard extension (repetition loop detection)
+## 18. Install loop-guard extension (repetition loop + malformed call detection)
 
-`loop-guard.ts` detects when the model is stuck writing the same file with the same content, using Jaccard similarity on word sets. Zero inference cost — pure string math.
+`loop-guard.ts` detects two failure patterns: (1) writing the same file with identical content repeatedly (Jaccard similarity), and (2) consecutive malformed tool calls with empty/missing arguments. Zero inference cost — pure string math.
 
 **File: `~/.pi/agent/extensions/loop-guard.ts`**
 ```bash
@@ -1061,13 +1061,19 @@ cp $(pwd)/extensions/loop-guard.ts ~/.pi/agent/extensions/
 
 **Default: disabled** — the primary defense against loops is proper LM Studio inference settings (repeat penalty 1.1, temperature 0.58). This extension is a safety net for when settings are missing or insufficient. Enable with `/piforge enable loop-guard`.
 
-### How it works
+### How it works — write loops
 
 Tracks write/edit tool calls per file path. Each write's content is tokenized into a lowercase word set. Jaccard similarity (intersection/union of word sets) is computed against previous writes to the **same file** in a sliding window of 10.
 
 Writing different files with similar content (e.g., `LeftArm.cs` / `RightArm.cs`) is never flagged — only repeated writes to the same path.
 
-### Escalation ladder
+### How it works — malformed tool calls
+
+Checks every tool call for missing or empty required arguments: bash without `command`, write without `content`/`path`, edit without `old_string`/`new_string`, read without `path`. Consecutive malformed calls increment a counter. Any valid call resets it.
+
+Q2 models sometimes can't format tool call JSON correctly — especially for bash commands with complex paths (spaces, quotes). The model emits `{}` or omits required fields, the call fails, the failure stays in context, and the model retries the same broken call. Each failure makes the next attempt worse. Compaction clears that poisoned history.
+
+### Write loop escalation
 
 | Tier | Trigger | Action |
 |---|---|---|
@@ -1076,6 +1082,14 @@ Writing different files with similar content (e.g., `LeftArm.cs` / `RightArm.cs`
 | **Compact** | 3 blocked attempts | Abort → compact (summarize real progress, ignore loop turns) → restart from `_state.md` |
 | **Nuclear** | Loops again after compact | Abort → double compact (crush context to one sentence) → restart |
 | **Give up** | Loops after nuclear | Notify user: "type `/clear` then read `_state.md`" |
+
+### Malformed call escalation
+
+| Tier | Trigger | Action |
+|---|---|---|
+| **Warn** | 4 consecutive malformed calls | Steer: "calls are failing — use write/edit instead of bash, simplify paths" |
+| **Compact** | 8 consecutive malformed calls | Abort → compact (clear poisoned context of failed attempts) → restart |
+| **Nuclear+** | Still failing after compact | Same escalation as write loops (double compact → tell user to `/clear`) |
 
 ### Jaccard similarity
 
@@ -1091,7 +1105,7 @@ Jaccard = 0/10 = 0.0 (completely different → real progress)
 
 ### Why this exists
 
-Without proper repeat penalty settings, local models (especially at Q2 quantization) fall into repetition loops — writing `_state.md` with identical content 20+ times, burning through context doing nothing. The loop is caused at the token distribution level (the model literally favors repeating tokens), so prompt-level instructions can't fix it. This guard detects the symptom and auto-recovers.
+Without proper repeat penalty settings, local models (especially at Q2 quantization) fall into repetition loops — writing `_state.md` with identical content 20+ times, burning through context doing nothing. They also emit malformed tool calls when JSON formatting exceeds their precision (paths with spaces, complex escaping). Both patterns poison context — the model sees its own failures and fixates on them. This guard detects the symptoms and auto-recovers via compaction, which clears the poisoned history.
 
 ---
 
@@ -1323,7 +1337,7 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         ├── plan-clarify.ts             ← asks clarifying questions after _plan.md (off by default)
         ├── piforge-manager.ts          ← /piforge toggle command
         ├── session-manager.ts          ← per-tab .think/ isolation via symlinks
-        ├── loop-guard.ts               ← repetition loop detection via Jaccard (off by default)
+        ├── loop-guard.ts               ← repetition loop + malformed call detection (off by default)
         └── queue.ts                    ← /q post-completion task queue
 ```
 
