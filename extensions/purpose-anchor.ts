@@ -7,6 +7,14 @@
 //   3. After compaction (session_compact event), re-injects purpose + state
 //      via steer message so Pi re-orients to the original task
 //
+// Commands:
+//   /purpose ["text"]     — view or set purpose
+//   /purpose-clear        — reset purpose
+//   /important "text"     — append to ## Important in _purpose.md + steer immediately
+//   /important -compact "text" — same but forces compaction after (cleans context)
+//   /important            — list active important notes
+//   /important clear      — remove all important notes from _purpose.md
+//
 // Install: copy to ~/.pi/agent/extensions/purpose-anchor.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -162,6 +170,93 @@ Files to read: ${files.join(", ") || ".think/_state.md"}`;
         ctx.ui.notify("purpose-anchor: purpose cleared. Will capture from next prompt.", "info");
       } catch {
         ctx.ui.notify("purpose-anchor: no purpose file to clear.", "info");
+      }
+    },
+  });
+
+  // /important command — append to _purpose.md ## Important + steer immediately
+  pi.registerCommand("important", {
+    description: 'Add a persistent note. Usage: /important "text" or /important -compact "text"',
+    handler: async (args: any, ctx: any) => {
+      const raw = (args ?? "").trim();
+      const thinkDir = path.join(ctx.cwd, ".think");
+      const purposeFile = path.join(thinkDir, "_purpose.md");
+
+      // /important clear — remove ## Important section
+      if (raw === "clear") {
+        const existing = readFileOr(purposeFile, "");
+        const idx = existing.indexOf("\n## Important");
+        if (idx === -1) {
+          ctx.ui.notify("No important notes to clear.", "info");
+          return;
+        }
+        fs.writeFileSync(purposeFile, existing.slice(0, idx).trimEnd() + "\n", "utf-8");
+        ctx.ui.notify("purpose-anchor: important notes cleared from _purpose.md", "info");
+        return;
+      }
+
+      // /important (no args) — list current notes
+      if (!raw) {
+        const existing = readFileOr(purposeFile, "");
+        const idx = existing.indexOf("## Important");
+        if (idx === -1) {
+          ctx.ui.notify("No important notes. Usage: /important \"your note\"", "info");
+          return;
+        }
+        const section = existing.slice(idx).trim();
+        ctx.ui.notify(section, "info");
+        return;
+      }
+
+      // Parse -compact flag
+      const wantCompact = raw.startsWith("-compact");
+      const text = (wantCompact ? raw.slice(8) : raw).trim().replace(/^["']|["']$/g, "");
+
+      if (!text) {
+        ctx.ui.notify("Usage: /important \"your note\" or /important -compact \"your note\"", "info");
+        return;
+      }
+
+      // Append to _purpose.md under ## Important
+      ensureDir(thinkDir);
+      const existing = readFileOr(purposeFile, "");
+      const hasSection = existing.includes("## Important");
+
+      let updated: string;
+      if (hasSection) {
+        updated = existing.trimEnd() + `\n- ${text}\n`;
+      } else {
+        updated = existing.trimEnd() + `\n\n## Important\n- ${text}\n`;
+      }
+      fs.writeFileSync(purposeFile, updated, "utf-8");
+
+      ctx.ui.notify(`purpose-anchor: added important note — "${text.slice(0, 60)}"`, "info");
+
+      // Steer immediately
+      await pi.sendMessage(
+        {
+          customType: "important_note",
+          content: `[purpose-anchor] IMPORTANT (from user): ${text}\n\nThis has been saved to _purpose.md and will persist across compaction. Apply this immediately and for all future work in this session.`,
+          display: { label: "important", content: text.slice(0, 80) },
+        },
+        { deliverAs: "steer" }
+      );
+
+      // Optional: force compact after
+      if (wantCompact) {
+        ctx.ui.notify("purpose-anchor: forcing compaction — important note is safe in _purpose.md", "info");
+        (ctx as any).compact({
+          customInstructions:
+            "User added an important note and requested compaction. " +
+            "The note is saved to .think/_purpose.md on disk. " +
+            "Summarize progress normally — the important notes will be re-injected from the file.",
+          onComplete: () => {
+            ctx.ui.notify("purpose-anchor: compaction complete — important notes persist in _purpose.md", "info");
+          },
+          onError: (err: Error) => {
+            ctx.ui.notify(`purpose-anchor: compaction failed — ${err.message}`, "error");
+          },
+        });
       }
     },
   });

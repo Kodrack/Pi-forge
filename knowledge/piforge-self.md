@@ -5,7 +5,7 @@
 ### External brain: `.think/`
 - `_state.md` — read FIRST every turn, update after every action
 - `_plan.md` — your implementation plan
-- `_purpose.md` — session goal (auto-captured from first prompt)
+- `_purpose.md` — session goal (auto-captured from first prompt) + `## Important` user notes
 - `_summary.md` — rolling summary of completed work
 - `_knowledge.md` — injected knowledge (managed by extension, don't delete)
 - `_knowledge-manifest.md` — which knowledge files are active (don't edit)
@@ -23,6 +23,8 @@
 - `/l1 /l2 /l3 "question"` — query distill levels
 - `/sessions` — list all .think/ sessions
 - `/forget <name>` — remove active knowledge
+- `/important "note"` — persistent note (saved to _purpose.md, survives compaction)
+- `/important -compact "note"` — same + force compaction after
 - `/q "message"` — queue work for after you finish
 - `/guide` — load this PiForge guide
 

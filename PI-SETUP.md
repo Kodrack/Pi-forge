@@ -26,11 +26,12 @@ Tested on macOS (zsh) with Node 24, npm 11, Pi 0.73.0.
 15. [Install plan-clarify extension (clarifying questions)](#15-install-plan-clarify-extension-clarifying-questions)
 16. [Install piforge-manager extension (toggle system)](#16-install-piforge-manager-extension-toggle-system)
 17. [Install session-manager extension (per-tab .think/ isolation)](#17-install-session-manager-extension-per-tab-think-isolation)
-18. [LM Studio inference settings](#18-lm-studio-inference-settings)
-19. [First run + verification](#19-first-run--verification)
-20. [Useful slash commands inside Pi](#20-useful-slash-commands-inside-pi)
-21. [Troubleshooting](#21-troubleshooting)
-22. [Replication checklist](#22-replication-checklist)
+18. [Install loop-guard extension (repetition loop detection)](#18-install-loop-guard-extension-repetition-loop-detection)
+19. [LM Studio inference settings](#19-lm-studio-inference-settings)
+20. [First run + verification](#20-first-run--verification)
+21. [Useful slash commands inside Pi](#21-useful-slash-commands-inside-pi)
+22. [Troubleshooting](#22-troubleshooting)
+23. [Replication checklist](#23-replication-checklist)
 
 ---
 
@@ -138,6 +139,13 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **What it does:** each new Pi terminal gets its own `.think/` directory via symlinks under `.think-sessions/`. The model always writes to `.think/` — same hardcoded path, zero overhead. Supports `/switch-session` to switch between sessions and `/sessions` to list them.
 - **Commands:** `/sessions` (list all), `/switch-session` (list + pick), `/switch-session <id>` (switch directly)
 - **Migration:** if `.think/` exists as a real directory, it's moved to `.think-sessions/session-001/` automatically
+
+#### `loop-guard.ts`
+- **Scope:** write/edit tool calls — tracks per-file content similarity
+- **Hook:** `tool_call` (compares content via Jaccard similarity on word sets)
+- **What it does:** detects when the model writes the same file with nearly identical content repeatedly. Escalates from warning → block → auto-compact → double compact → tell user to `/clear`. Zero inference cost — pure string math.
+- **Default:** disabled — the primary defense is LM Studio inference settings (repeat penalty). Enable with `/piforge enable loop-guard`
+- **Why it exists:** without repeat penalty, Q2 models fall into loops writing `_state.md` 20+ times with identical content, burning context doing nothing. This catches the symptom regardless of which inference harness is used.
 
 ---
 
@@ -1042,7 +1050,52 @@ The extension auto-appends `.think/` and `.think-sessions/` to `.gitignore` on f
 
 ---
 
-## 18. LM Studio inference settings
+## 18. Install loop-guard extension (repetition loop detection)
+
+`loop-guard.ts` detects when the model is stuck writing the same file with the same content, using Jaccard similarity on word sets. Zero inference cost — pure string math.
+
+**File: `~/.pi/agent/extensions/loop-guard.ts`**
+```bash
+cp $(pwd)/extensions/loop-guard.ts ~/.pi/agent/extensions/
+```
+
+**Default: disabled** — the primary defense against loops is proper LM Studio inference settings (repeat penalty 1.1, temperature 0.58). This extension is a safety net for when settings are missing or insufficient. Enable with `/piforge enable loop-guard`.
+
+### How it works
+
+Tracks write/edit tool calls per file path. Each write's content is tokenized into a lowercase word set. Jaccard similarity (intersection/union of word sets) is computed against previous writes to the **same file** in a sliding window of 10.
+
+Writing different files with similar content (e.g., `LeftArm.cs` / `RightArm.cs`) is never flagged — only repeated writes to the same path.
+
+### Escalation ladder
+
+| Tier | Trigger | Action |
+|---|---|---|
+| **Warn** | 4 writes to same file with >85% Jaccard | Steer: "you may be looping, make next action different" |
+| **Block** | 6 writes to same file with >85% Jaccard | `blockToolCall` + specific escape hint |
+| **Compact** | 3 blocked attempts | Abort → compact (summarize real progress, ignore loop turns) → restart from `_state.md` |
+| **Nuclear** | Loops again after compact | Abort → double compact (crush context to one sentence) → restart |
+| **Give up** | Loops after nuclear | Notify user: "type `/clear` then read `_state.md`" |
+
+### Jaccard similarity
+
+```
+Text A words: {deleted, old, files, need, recreate, macro}
+Text B words: {deleted, old, files, need, recreate, macro}
+Jaccard = intersection / union = 6/6 = 1.0 (identical → loop)
+
+Text A: {deleted, old, files, need, recreate}
+Text B: {torsosection, done, writing, leftarm, next}
+Jaccard = 0/10 = 0.0 (completely different → real progress)
+```
+
+### Why this exists
+
+Without proper repeat penalty settings, local models (especially at Q2 quantization) fall into repetition loops — writing `_state.md` with identical content 20+ times, burning through context doing nothing. The loop is caused at the token distribution level (the model literally favors repeating tokens), so prompt-level instructions can't fix it. This guard detects the symptom and auto-recovers.
+
+---
+
+## 19. LM Studio inference settings
 
 These settings apply per-request (no model reload needed). Change them in LM Studio's Inference tab.
 
@@ -1056,7 +1109,7 @@ These settings apply per-request (no model reload needed). Change them in LM Stu
 
 ---
 
-## 19. First run + verification
+## 20. First run + verification
 
 1. Start LM Studio's server and load `qwen3.6-35b-a3b`.
 2. From any project directory:
@@ -1124,7 +1177,7 @@ Three real-world prompts tested after full stack was operational:
 
 ---
 
-## 20. Useful slash commands inside Pi
+## 21. Useful slash commands inside Pi
 
 | Command | What it does |
 |---|---|
@@ -1147,6 +1200,10 @@ Three real-world prompts tested after full stack was operational:
 | `/forget <name>` | Remove a knowledge file from active set (e.g., `/forget playwright-testing`) |
 | `/forget` | List currently active knowledge files |
 | `/guide` | Load PiForge self-documentation into context on demand |
+| `/important "note"` | Add persistent note — steered immediately, saved to `_purpose.md`, survives compaction |
+| `/important -compact "note"` | Same + forces compaction after (cleans context, note is safe on disk) |
+| `/important` | List active important notes |
+| `/important clear` | Remove all important notes from `_purpose.md` |
 | `/q "message"` | Queue work for after Pi finishes current task |
 | `/q` | Show queued messages |
 | `/q clear` | Clear the queue |
@@ -1172,7 +1229,7 @@ pi --continue                  # resume the last session
 
 ---
 
-## 21. Troubleshooting
+## 22. Troubleshooting
 
 **`No models available`**
 LM Studio server isn't running, or `models.json` `id` doesn't match the model id from `curl /v1/models`. Check both.
@@ -1207,7 +1264,7 @@ The reason text isn't being interpreted. Two possible fixes:
 
 ---
 
-## 22. Replication checklist
+## 23. Replication checklist
 
 On a fresh machine, in order:
 
@@ -1228,7 +1285,9 @@ On a fresh machine, in order:
 - [ ] `~/.pi/agent/extensions/plan-clarify.ts` created
 - [ ] `~/.pi/agent/extensions/piforge-manager.ts` created
 - [ ] `~/.pi/agent/extensions/session-manager.ts` created
-- [ ] `~/.pi/piforge.json` created (`{ "disabled": ["knowledge-injector", "plan-clarify"] }`)
+- [ ] `~/.pi/agent/extensions/loop-guard.ts` created
+- [ ] `~/.pi/agent/extensions/queue.ts` created
+- [ ] `~/.pi/piforge.json` created (`{ "disabled": ["plan-clarify", "explore", "distill-awareness", "loop-guard"] }`)
 - [ ] `~/.pi/knowledge/` directory created with at least one gotchas file
 - [ ] `pi --list-models` shows the LM Studio models
 - [ ] `pi` boots with all extension notifications (7 active + disabled list)
@@ -1244,7 +1303,9 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
 ├── piforge.json                        ← extension toggles
 ├── knowledge/
 │   ├── svelte5-gotchas.md
-│   └── astro-gotchas.md
+│   ├── astro-gotchas.md
+│   ├── playwright-testing.md
+│   └── piforge-self.md
 └── agent/
     ├── models.json
     ├── settings.json
@@ -1261,7 +1322,9 @@ That's the whole setup. No shell-level env vars, no proxies — just these files
         ├── knowledge-injector.ts       ← isolated LLM call selects knowledge files (off by default)
         ├── plan-clarify.ts             ← asks clarifying questions after _plan.md (off by default)
         ├── piforge-manager.ts          ← /piforge toggle command
-        └── session-manager.ts          ← per-tab .think/ isolation via symlinks
+        ├── session-manager.ts          ← per-tab .think/ isolation via symlinks
+        ├── loop-guard.ts               ← repetition loop detection via Jaccard (off by default)
+        └── queue.ts                    ← /q post-completion task queue
 ```
 
 All extension source files live in `piforge/extensions/`. To update an extension: edit the file there, then copy it to `~/.pi/agent/extensions/` and run `/reload` inside Pi. Or re-run `bash install.sh` to reinstall everything.

@@ -2,6 +2,7 @@
   "disabled": [
     "plan-clarify",
     "explore",
-    "distill-awareness"
+    "distill-awareness",
+    "loop-guard"
   ]
 }

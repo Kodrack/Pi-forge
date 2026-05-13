@@ -10,7 +10,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 ## What's in the box
 
-### 8 hard-enforcement extensions (guards)
+### 9 hard-enforcement extensions (guards)
 
 | Extension | What it enforces | Default |
 |---|---|---|
@@ -19,13 +19,14 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `context-monitor.ts` | Steers model to write state files at 65% context, urgent at 80% | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns | on |
+| `loop-guard.ts` | Detects repetition loops via Jaccard similarity — warns at 4, blocks at 6, auto-compacts to escape. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Isolated LLM call selects relevant `~/.pi/knowledge/` files, saves manifest, auto re-injects after compaction. `/forget` to remove. | **off** |
 
-These are **hard** — the model cannot bypass them. `incremental-guard` and `knowledge-injector` physically reject tool calls. The others inject steering messages before the next LLM call.
+These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
-`plan-clarify` and `knowledge-injector` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
+`plan-clarify`, `knowledge-injector`, and `loop-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
 
 ### Codebase distillation — zoom levels for local models
 
@@ -123,7 +124,33 @@ When context gets compacted, Pi can lose track of the original goal. `purpose-an
 3. After compaction, steers Pi to re-read `.think/_state.md` and `_summary.md`
 4. Pi re-orients and continues without drift
 
-Commands: `/purpose` (view/set), `/purpose-clear` (reset)
+`/important "note"` adds persistent mid-session directives ("always use async", "don't touch auth module"). Saved to `_purpose.md` under `## Important`, steered immediately, survives compaction. Use `/important -compact "note"` to also force compaction after — cleans the context while the note is safe on disk.
+
+Commands: `/purpose` (view/set), `/purpose-clear` (reset), `/important "note"` (add persistent note), `/important -compact "note"` (add + compact), `/important clear` (remove notes)
+
+### Loop detection (Jaccard similarity)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `loop-guard.ts` | Detects repetition loops, auto-recovers via compaction | **off** |
+
+Without proper inference settings (repeat penalty, temperature), Q2 models fall into loops — writing `_state.md` with identical content 20+ times, burning context doing nothing. `loop-guard` detects this using **Jaccard similarity** and auto-recovers.
+
+**Jaccard similarity** measures the overlap between two sets of words. Given two text blocks, tokenize each into a set of lowercase words, then: `J = |intersection| / |union|`. A score of 1.0 = identical word sets, 0.0 = no words in common. This runs in microseconds with zero inference cost — pure `Set` math in JS.
+
+The guard tracks writes per file path in a sliding window of 10. Only repeated writes to the **same file** are flagged — writing similar but different files (e.g., `LeftArm.cs` / `RightArm.cs`) is normal progress.
+
+**Escalation ladder:**
+
+| Trigger | Action |
+|---|---|
+| 4 similar writes (>85% Jaccard) | Warning steer |
+| 6 similar writes | Hard block + escape hint |
+| 3 blocked attempts | Abort → compact (ignore loop turns) → restart from `_state.md` |
+| Loops again | Abort → double compact (crush context to one sentence) → restart |
+| Still loops | Notify user to `/clear` |
+
+> **This is a safety net, not the primary defense.** The real fix is LM Studio inference settings: `repeat_penalty: 1.1`, `temperature: 0.58`. Enable with `/piforge enable loop-guard`.
 
 ### Task queue (post-completion delivery)
 
@@ -301,6 +328,7 @@ piforge/
 │   ├── plan-clarify.ts                 ← clarifying questions after _plan.md (off by default)
 │   ├── knowledge-injector.ts           ← isolated LLM call selects knowledge files (off by default)
 │   ├── state-guard.ts                  ← blocks reads until _state.md read, forces updates
+│   ├── loop-guard.ts                   ← detects repetition loops via Jaccard similarity
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
 │   ├── distill.ts                      ← /distill + distill_codebase tool
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
