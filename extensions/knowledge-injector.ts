@@ -315,8 +315,8 @@ Otherwise NO.`;
     );
     const reply = (stdout || "").trim().toUpperCase();
 
-    // Parse response - default to NO (conservative: user can always add files manually)
-    const isYes = reply.includes("YES") && !reply.includes("NO");
+    // Parse response - check if it STARTS with YES (ignore "NO" appearing later in explanation)
+    const isYes = reply.startsWith("YES") || reply.match(/^[\s\n]*YES/);
     log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 50)}" → ${isYes ? "YES" : "NO"}`);
     return isYes;
   } catch (err: any) {

@@ -2,6 +2,7 @@
 # YOU MUST create .think/_state.md BEFORE doing anything else.
 # YOU MUST NOT write code until you have a _plan.md.
 # EVERY turn: read _state.md → do ONE thing → update _state.md → STOP.
+# EVEN IF THE TASK SEEMS SIMPLE — YOU STILL NEED A PLAN. No exceptions.
 
 
 ## CRITICAL: Context Constraints
@@ -60,13 +61,15 @@ After every action, rewrite `_state.md` with:
 ```markdown
 # Current State
 ## Task: [one-line description]
-## Current Step: [number]
-## Status: [in-progress / blocked / complete]
+## Progress: Step [N] of [total] — [step name]
+## Completed: [list completed steps briefly]
+## Status: in-progress | blocked | complete
 ## Last Action: [what you just did]
-## Next Action: [exactly what to do next]
+## Next Action: [EXACTLY what to do next — be specific]
 ## Key Files:
 - [file]: [what it contains, 1 line]
-## Context Needed Next Turn: [which 1-2 files to read]
+## Decisions: [key choices made, e.g., "using vanilla JS, no React"]
+## Read First: [which 1-2 files to read to continue]
 ```
 
 ### 5. Summarize, Don't Accumulate

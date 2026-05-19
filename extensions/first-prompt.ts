@@ -22,6 +22,12 @@ HARD CONSTRAINTS (you will fail if you ignore these):
 
 Why this matters: If you get cut off mid-file, your next turn won't know where you stopped. The filesystem is your memory — use it.
 
+WEB SEARCH: You have web_search(query). Use it BEFORE implementing when:
+- Working with a library/API you're unsure about
+- User mentions specific versions or "latest"
+- Debugging unfamiliar error messages
+- Anything that may have changed since your training cutoff
+
 Plan the implementation in numbered steps. Implement one step at a time — after each step, update _state.md and continue to the next step automatically.`;
 
 function isEnabled(): boolean {

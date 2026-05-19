@@ -131,7 +131,7 @@ Files to read: ${files.join(", ") || ".think/_state.md"}`;
           content: `Re-anchored after compaction: "${(purpose || "no purpose").slice(0, 60)}"`,
         },
       },
-      { deliverAs: "user" }
+      { deliverAs: "steer", triggerTurn: true }
     );
   });
 

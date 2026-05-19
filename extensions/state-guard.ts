@@ -39,6 +39,14 @@ function isThinkPath(filePath: string): boolean {
   return filePath.includes(".think/") || filePath.includes(".think\\");
 }
 
+function isThinkAtRoot(filePath: string, cwd: string): boolean {
+  // Normalize paths
+  const normalizedPath = path.resolve(filePath);
+  const rootThink = path.join(cwd, ".think");
+  // Check if path starts with the root .think directory
+  return normalizedPath.startsWith(rootThink + path.sep) || normalizedPath === rootThink;
+}
+
 function isStatePath(filePath: string): boolean {
   return filePath.includes("_state.md");
 }
@@ -46,16 +54,32 @@ function isStatePath(filePath: string): boolean {
 const STALE_MESSAGE = `[state-guard] You haven't updated .think/_state.md in the last ${STALE_TURN_THRESHOLD} turns.
 Your progress will be lost if context compacts.
 
-ACTION REQUIRED — update .think/_state.md NOW with:
-## Last Action: [what you just did]
-## Next Action: [exactly what to do next]
-## Key Files: [files that matter, one line each]
+ACTION REQUIRED — update .think/_state.md NOW with this format:
 
-Keep it SHORT. Then continue working.`;
+## Task: [one-line description]
+## Progress: Step [N] of [total] — [step name]
+## Completed: [list completed steps briefly]
+## Status: in-progress | blocked | complete
+## Last Action: [what you just did]
+## Next Action: [EXACTLY what to do next — be specific]
+## Key Files:
+- [file]: [what it contains]
+## Decisions: [key choices made, e.g., "using vanilla JS"]
+## Read First: [which 1-2 files to read to continue]
+
+Keep it concise but complete. This is your recovery point after compaction.`;
 
 const READ_FIRST_MESSAGE = `[state-guard] Read .think/_state.md FIRST before doing anything else.
-If it doesn't exist, create it with your current task and next action.
-This is your lifeline between turns and across compactions.`;
+If it doesn't exist, create it with this format:
+
+## Task: [describe what the user asked]
+## Progress: Step 0 of ? — Planning
+## Completed: none yet
+## Status: starting
+## Next Action: [your first action]
+## Key Files: none yet
+
+This is your lifeline across compactions — write everything you need to resume.`;
 
 export default function (pi: ExtensionAPI) {
   if (!isEnabled()) return;
@@ -101,8 +125,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Allow .think/ reads/writes — those are fine
-    if (isThinkPath(filePath)) return;
+    // Allow .think/ reads/writes ONLY if at root level
+    if (isThinkPath(filePath)) {
+      if (!isThinkAtRoot(filePath, ctx.cwd)) {
+        return {
+          block: true,
+          reason:
+            `BLOCKED: .think/ must be at project root, not inside subfolders. ` +
+            `You tried to access: ${filePath}\n` +
+            `Use: ${path.join(ctx.cwd, ".think")}/ instead.\n` +
+            `The .think/ directory at root is symlinked to your session folder.`,
+        };
+      }
+      return; // at root, allow it
+    }
 
     // Allow non-file tools
     if (ALWAYS_ALLOWED_TOOLS.has(toolName)) return;
@@ -130,7 +166,18 @@ export default function (pi: ExtensionAPI) {
       await pi.sendMessage(
         {
           customType: "state_guard_create",
-          content: `[state-guard] No .think/_state.md found. Create one NOW before reading source files.\n\nWrite this to .think/_state.md:\n## Task: [describe what the user asked]\n## Current Step: 0\n## Status: starting\n## Next Action: [your first action]\n\nThen continue with your work.`,
+          content: `[state-guard] No .think/_state.md found. Create one NOW before reading source files.
+
+Write this to .think/_state.md:
+## Task: [describe what the user asked]
+## Progress: Step 0 of ? — Planning
+## Completed: none yet
+## Status: starting
+## Next Action: [your first action]
+## Key Files: none yet
+## Decisions: [any constraints from user, e.g., "vanilla JS only"]
+
+Then continue with your work.`,
           display: {
             label: "state-guard",
             content: "No _state.md found — steering model to create one",
@@ -141,6 +188,15 @@ export default function (pi: ExtensionAPI) {
       stateReadThisSession = true; // don't block further
       return;
     }
+  });
+
+  // Reset counters after compaction — don't nag immediately after context reset
+  pi.on("session_compact", async (_event: any, ctx: any) => {
+    turnsSinceStateWrite = 0;
+    stateReadThisSession = false;
+    readReminderSent = false;
+    turnHadStateWrite = false;
+    ctx.ui.notify("state-guard: counters reset after compaction", "info");
   });
 
   pi.on("turn_end", async (_event: any, ctx: any) => {

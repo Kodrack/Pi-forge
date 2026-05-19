@@ -10,7 +10,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 ## What's in the box
 
-### 9 hard-enforcement extensions (guards)
+### 10 hard-enforcement extensions (guards)
 
 | Extension | What it enforces | Default |
 |---|---|---|
@@ -18,11 +18,12 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `thinking-guard.ts` | Injects correction when thinking block > 2000 chars — stops reasoning spirals | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, urgent at 80% | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
-| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns | on |
+| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders) | on |
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
+| `web-search.ts` | Web search with sub-pi synthesis. Searches DuckDuckGo, fetches pages, synthesizes via isolated sub-pi — main context only sees final summary. `web_search()` tool + `/web-search` command | on |
 
 These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
@@ -91,6 +92,33 @@ Output structure:
 │   └── auth-notes-answer.md
 └── tmp/               ← prompt files (auto-cleaned)
 ```
+
+### Web search (context-isolated)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `web-search.ts` | Web search with sub-pi synthesis — main context only sees final summary | on |
+
+Local models don't have current knowledge. `web-search` lets Pi search the web without polluting the main context with raw HTML:
+
+1. Searches DuckDuckGo for the query
+2. Fetches top 5 result pages in parallel
+3. Extracts readable content (strips nav, ads, scripts)
+4. Spawns isolated sub-pi (`--no-session --no-extensions --no-tools --thinking off --offline`) to synthesize
+5. Returns only the synthesis to main context
+
+Raw pages are saved to `.think/web-search/<hash>/` for reference. The main Pi never sees the HTML — only the ~400 word synthesis.
+
+```
+/web-search "svelte 5 runes tutorial"    # manual search
+# OR Pi can call web_search() tool autonomously
+```
+
+Use it BEFORE implementing when:
+- Working with a library/API you're unsure about
+- User mentions versions, "latest", or recent dates
+- Debugging error messages you don't recognize
+- Anything that might have changed since training
 
 ### Session isolation (per-tab `.think/`)
 
