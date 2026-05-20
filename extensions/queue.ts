@@ -22,15 +22,27 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`queue active — /q "message" to queue work for after Pi finishes`, "info");
   });
 
-  pi.on("turn_end", async () => {
+  pi.on("turn_end", async (_event: any, ctx: any) => {
     if (queue.length === 0 || processing) return;
     processing = true;
 
     const next = queue.shift()!;
     try {
-      await (pi as any).sendUserMessage(`[queued] ${next}`);
-    } catch {
+      await pi.sendMessage(
+        {
+          customType: "queued_task",
+          content: `[QUEUED TASK] ${next}`,
+          display: {
+            label: "queue",
+            content: `Delivering queued task: ${next.slice(0, 50)}${next.length > 50 ? "..." : ""}`,
+          },
+        },
+        { deliverAs: "user", triggerTurn: true }
+      );
+      ctx.ui.notify(`Queue: delivered task, ${queue.length} remaining`, "info");
+    } catch (e: any) {
       queue.unshift(next);
+      ctx.ui.notify(`Queue: delivery failed — ${e.message}`, "error");
     } finally {
       processing = false;
     }

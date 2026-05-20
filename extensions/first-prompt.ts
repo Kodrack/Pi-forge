@@ -28,6 +28,11 @@ WEB SEARCH: You have web_search(query). Use it BEFORE implementing when:
 - Debugging unfamiliar error messages
 - Anything that may have changed since your training cutoff
 
+FRONTEND/UI TASKS (HTML, CSS, JS etc with visual output):
+- Implement MAX 2 changes per turn
+- Before implementing from a spec: check variable names match actual code (loop vars, function params)
+- If something breaks: STOP, revert to working state, implement ONE change at a time
+
 Plan the implementation in numbered steps. Implement one step at a time — after each step, update _state.md and continue to the next step automatically.`;
 
 function isEnabled(): boolean {

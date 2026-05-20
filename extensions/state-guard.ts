@@ -39,10 +39,18 @@ function isThinkPath(filePath: string): boolean {
   return filePath.includes(".think/") || filePath.includes(".think\\");
 }
 
+function expandTilde(filePath: string): string {
+  if (filePath.startsWith("~/")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+
 function isThinkAtRoot(filePath: string, cwd: string): boolean {
-  // Normalize paths
-  const normalizedPath = path.resolve(filePath);
-  const rootThink = path.join(cwd, ".think");
+  // Expand tilde and normalize paths
+  const normalizedPath = path.resolve(expandTilde(filePath));
+  const normalizedCwd = path.resolve(expandTilde(cwd));
+  const rootThink = path.join(normalizedCwd, ".think");
   // Check if path starts with the root .think directory
   return normalizedPath.startsWith(rootThink + path.sep) || normalizedPath === rootThink;
 }
