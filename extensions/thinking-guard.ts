@@ -12,8 +12,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ---------- LIMITS (tune these) ----------
-const MAX_THINKING_CHARS = 2000;  // ~500 tokens — enough to reason, not enough to spiral
-const MAX_THINKING_LINES = 60;    // secondary line-count check
+const MAX_THINKING_CHARS = 15000;  // ~3.75k tokens
+const MAX_THINKING_LINES = 375;    // secondary line-count check
 
 // The correction message injected as a steering message after a long thinking block.
 // Mirrors the .think/ workflow from AGENTS.md so the model knows exactly what to do.
