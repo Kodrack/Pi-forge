@@ -315,13 +315,18 @@ Otherwise NO.`;
     );
     const reply = (stdout || "").trim().toUpperCase();
 
-    // Parse response - check if YES appears as a standalone answer
+    // Parse response - check if YES appears anywhere as an answer
     // LLM may answer numbered questions first, then give YES/NO at the end
-    const lines = reply.split(/\r?\n/).map(l => l.trim());
-    const hasYesLine = lines.some(l => l === "YES" || l === "**YES**" || l.startsWith("YES —") || l.startsWith("YES,") || l.startsWith("YES."));
-    const lastLine = lines[lines.length - 1] || "";
-    const endsWithYes = lastLine.startsWith("YES");
-    const isYes = hasYesLine || endsWithYes || reply.startsWith("YES");
+    // Common patterns: "YES", "**YES**", "Answer: YES", "**Answer: YES**"
+    const hasYes = reply.includes("YES");
+    const hasNo = reply.includes("NO ");  // space after to avoid matching "NODE", "KNOW", etc.
+    const hasNoStandalone = /\bNO\b/.test(reply) && !reply.includes("NODE") && !reply.includes("KNOW");
+
+    // YES wins if present, unless explicit NO answer at the end
+    const lastLine = reply.split(/\r?\n/).map(l => l.trim()).filter(l => l).pop() || "";
+    const endsWithNo = lastLine === "NO" || lastLine === "**NO**" || lastLine.startsWith("NO.");
+
+    const isYes = hasYes && !endsWithNo;
     log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 80)}..." → ${isYes ? "YES" : "NO"}`);
     return isYes;
   } catch (err: any) {
