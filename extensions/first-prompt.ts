@@ -12,6 +12,19 @@ import * as path from "path";
 import * as os from "os";
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
+
+function readAgentsMd(): string | null {
+  const agentsPath = path.join(process.cwd(), "AGENTS.md");
+  if (fs.existsSync(agentsPath)) {
+    try {
+      return fs.readFileSync(agentsPath, "utf-8");
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 const APPEND = `
 
 HARD CONSTRAINTS (you will fail if you ignore these):
@@ -28,9 +41,10 @@ WEB SEARCH: You have web_search(query). Use it BEFORE implementing when:
 - Debugging unfamiliar error messages
 - Anything that may have changed since your training cutoff
 
-FRONTEND/UI TASKS (HTML, CSS, JS etc with visual output):
-- Implement MAX 2 changes per turn
+FRONTEND/UI TASKS (HTML, CSS, JS with visual output):
+- Implement MAX 2 changes per turn, then OPEN IN BROWSER to verify
 - Before implementing from a spec: check variable names match actual code (loop vars, function params)
+- After any JS edit: browser test is REQUIRED — syntax check (node -c) catches syntax, not runtime errors
 - If something breaks: STOP, revert to working state, implement ONE change at a time
 
 Plan the implementation in numbered steps. Implement one step at a time — after each step, update _state.md and continue to the next step automatically.`;
@@ -52,7 +66,12 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("first-prompt disabled (use /piforge enable first-prompt to activate)", "info");
       return;
     }
-    ctx.ui.notify("first-prompt active — will inject planning instruction into first prompt", "info");
+    const agentsMd = readAgentsMd();
+    if (agentsMd) {
+      ctx.ui.notify(`first-prompt active — found AGENTS.md (${agentsMd.length} chars), will inject on first prompt`, "info");
+    } else {
+      ctx.ui.notify("first-prompt active — no AGENTS.md found, using default constraints", "info");
+    }
   });
 
   pi.on("input", (event) => {
@@ -60,9 +79,14 @@ export default function (pi: ExtensionAPI) {
     fired = true;
 
     const original = (event as any).text ?? "";
+    const agentsMd = readAgentsMd();
+    const instructions = agentsMd
+      ? `\n\n---\n# AGENTS.md\n${agentsMd}\n---\n`
+      : APPEND;
+
     return {
       action: "transform" as const,
-      text: original + APPEND,
+      text: original + instructions,
     };
   });
 }

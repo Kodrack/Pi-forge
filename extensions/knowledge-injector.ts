@@ -315,9 +315,14 @@ Otherwise NO.`;
     );
     const reply = (stdout || "").trim().toUpperCase();
 
-    // Parse response - check if it STARTS with YES (ignore "NO" appearing later in explanation)
-    const isYes = reply.startsWith("YES") || reply.match(/^[\s\n]*YES/);
-    log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 50)}" → ${isYes ? "YES" : "NO"}`);
+    // Parse response - check if YES appears as a standalone answer
+    // LLM may answer numbered questions first, then give YES/NO at the end
+    const lines = reply.split(/\r?\n/).map(l => l.trim());
+    const hasYesLine = lines.some(l => l === "YES" || l === "**YES**" || l.startsWith("YES —") || l.startsWith("YES,") || l.startsWith("YES."));
+    const lastLine = lines[lines.length - 1] || "";
+    const endsWithYes = lastLine.startsWith("YES");
+    const isYes = hasYesLine || endsWithYes || reply.startsWith("YES");
+    log?.(`  ${file.name} — LLM replied: "${reply.slice(0, 80)}..." → ${isYes ? "YES" : "NO"}`);
     return isYes;
   } catch (err: any) {
     log?.(`  ${file.name} — selection error: ${err.message}, skipping`);

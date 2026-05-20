@@ -9,6 +9,20 @@
 // Install: copy to ~/.pi/agent/extensions/context-monitor.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as fs from "fs";
+import * as path from "path";
+
+function readAgentsMd(): string | null {
+  const agentsPath = path.join(process.cwd(), "AGENTS.md");
+  if (fs.existsSync(agentsPath)) {
+    try {
+      return fs.readFileSync(agentsPath, "utf-8");
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 // ---------- THRESHOLDS ----------
 const WARN_PERCENT   = 65;   // warning — write state now
@@ -68,8 +82,25 @@ export default function (pi: ExtensionAPI) {
       try {
         (ctx as any).compact?.({
           customInstructions: "Context was auto-compacted at 80%. Continue from .think/_state.md.",
-          onComplete: () => {
+          onComplete: async () => {
             ctx.ui.notify("context-monitor: compaction complete", "info");
+
+            // Re-inject AGENTS.md after compaction
+            const agentsMd = readAgentsMd();
+            if (agentsMd) {
+              await pi.sendMessage(
+                {
+                  customType: "agents_md_reinjection",
+                  content: `[context-monitor] Context was compacted. Re-injecting AGENTS.md rules:\n\n---\n${agentsMd}\n---\n\nNow read .think/_state.md and continue from where you left off.`,
+                  display: {
+                    label: "context-monitor",
+                    content: "AGENTS.md re-injected after compaction",
+                  },
+                },
+                { deliverAs: "steer" }
+              );
+              ctx.ui.notify("context-monitor: AGENTS.md re-injected", "info");
+            }
           },
           onError: (err: Error) => {
             ctx.ui.notify(`context-monitor: compaction failed — ${err.message}`, "error");
