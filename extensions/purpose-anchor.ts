@@ -47,11 +47,55 @@ function ensureDir(dir: string): void {
   }
 }
 
+// True if .think/_state.md declares the task finished. Used to avoid waking
+// the model after compaction when there is nothing left to do.
+function taskMarkedComplete(thinkDir: string): boolean {
+  try {
+    const content = fs.readFileSync(path.join(thinkDir, "_state.md"), "utf-8");
+    const m = content.match(/##\s*Status:\s*([^\n]+)/i);
+    return !!m && /\b(complete|completed|done|finished)\b/i.test(m[1]);
+  } catch {
+    return false;
+  }
+}
+
+// first-prompt.ts appends a big constraints block (and optionally AGENTS.md) to
+// the user's first message. Strip it so the saved purpose is the user's actual
+// ask — otherwise the post-compaction re-inject balloons and re-triggers
+// compaction immediately, causing a loop.
+function stripInjectedInstructions(text: string): string {
+  let t = text;
+  const markers = [
+    /\n+HARD CONSTRAINTS \(you will fail/i,
+    /\n+---\n#\s*AGENTS\.md/i,
+  ];
+  for (const re of markers) {
+    const idx = t.search(re);
+    if (idx !== -1) t = t.slice(0, idx);
+  }
+  return t.trim();
+}
+
 export default function (pi: ExtensionAPI) {
   if (!isEnabled()) return;
 
   let firstPromptCaptured = false;
   let lastUserPrompt = "";
+
+  // Loop guard — PROGRESS-based, not compaction-count based.
+  // A legitimate long task goes through many compactions with no user input;
+  // that's fine AS LONG AS it's making progress (i.e. _state.md keeps changing
+  // every turn, per the workflow). The loop only matters when the model is
+  // woken repeatedly but _state.md is FROZEN — it's re-narrating, not working.
+  // So: unlimited wakes while state changes; stop waking after the state has
+  // been identical across STALL_THRESHOLD consecutive wakes. ABSOLUTE_BACKSTOP
+  // is a last-resort guard against a model that makes cosmetic state edits
+  // forever — set high so real autonomous runs never hit it.
+  let lastStateSnapshot = "";
+  let noProgressWakes = 0;
+  let totalWakesSinceInput = 0;
+  const STALL_THRESHOLD = 3;
+  const ABSOLUTE_BACKSTOP = 15;
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     const thinkDir = path.join(ctx.cwd, ".think");
@@ -68,9 +112,15 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Capture every user prompt so we have the first one
+  // Capture every user prompt so we have the first one. A real user input
+  // also resets the loop guard — the cycle only matters when NO user spoke.
   pi.on("input", (event: any) => {
     lastUserPrompt = (event as any).text ?? "";
+    // Real user input resets the loop guard — the cycle only matters when no
+    // human spoke between compactions.
+    noProgressWakes = 0;
+    totalWakesSinceInput = 0;
+    lastStateSnapshot = "";
   });
 
   // On first turn, save the purpose if not already saved
@@ -85,8 +135,9 @@ export default function (pi: ExtensionAPI) {
     if (fs.existsSync(purposeFile)) return;
 
     ensureDir(thinkDir);
-    fs.writeFileSync(purposeFile, lastUserPrompt.trim(), "utf-8");
-    ctx.ui.notify(`purpose-anchor: saved purpose — "${lastUserPrompt.trim().slice(0, 60)}"`, "info");
+    const purposeText = stripInjectedInstructions(lastUserPrompt.trim());
+    fs.writeFileSync(purposeFile, purposeText, "utf-8");
+    ctx.ui.notify(`purpose-anchor: saved purpose — "${purposeText.slice(0, 60)}"`, "info");
   });
 
   // After compaction: re-inject purpose + state so Pi re-orients
@@ -105,7 +156,35 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    ctx.ui.notify("purpose-anchor: steering Pi to re-read .think/ files after compaction", "info");
+    // CRITICAL: if the task is already complete, do NOT wake the model. Waking
+    // it (triggerTurn) when there's nothing to do creates an infinite
+    // compaction↔re-inject loop — the model just re-states "done", which grows
+    // context, which triggers another compaction. Stay idle; wait for the user.
+    if (taskMarkedComplete(thinkDir)) {
+      ctx.ui.notify("purpose-anchor: task marked complete in _state.md — staying idle, waiting for user (no re-trigger)", "info");
+      return;
+    }
+
+    // Progress check: has _state.md changed since the last wake?
+    if (state && state === lastStateSnapshot) {
+      noProgressWakes++;
+    } else {
+      noProgressWakes = 0;
+      lastStateSnapshot = state;
+    }
+
+    const stalled = noProgressWakes >= STALL_THRESHOLD;          // frozen state = stuck
+    const backstop = totalWakesSinceInput >= ABSOLUTE_BACKSTOP;  // last-resort guard
+    const wouldLoop = stalled || backstop;
+
+    if (wouldLoop) {
+      const why = stalled
+        ? `_state.md unchanged across ${noProgressWakes} wakes (no progress)`
+        : `${totalWakesSinceInput} wakes with no user input (backstop)`;
+      ctx.ui.notify(`purpose-anchor: ${why} — NOT re-triggering, going idle. Waiting for user.`, "info");
+    } else {
+      ctx.ui.notify("purpose-anchor: steering Pi to re-read .think/ files after compaction", "info");
+    }
 
     const files: string[] = [];
     if (state) files.push(".think/_state.md");
@@ -119,6 +198,10 @@ REQUIRED ACTIONS — do these BEFORE anything else:
 ${summary ? "3" : "2"}. Continue from the "Next Action" in _state.md. Do NOT restart from scratch.
 ${summary ? "4" : "3"}. Do NOT ask the user to repeat themselves or start a new session.
 
+IF THE TASK IS ALREADY COMPLETE: do NOT continue and do NOT re-narrate what you did.
+Set "## Status: complete" in .think/_state.md (if not already), then STOP and wait for
+the user. Repeating "task done" every turn is a failure, not progress.
+
 Original task: "${purpose || "unknown — check _state.md"}"
 Files to read: ${files.join(", ") || ".think/_state.md"}`;
 
@@ -131,8 +214,11 @@ Files to read: ${files.join(", ") || ".think/_state.md"}`;
           content: `Re-anchored after compaction: "${(purpose || "no purpose").slice(0, 60)}"`,
         },
       },
-      { deliverAs: "steer", triggerTurn: true }
+      // Only wake the model if we're not looping; otherwise leave it as context.
+      { deliverAs: "steer", triggerTurn: !wouldLoop }
     );
+
+    if (!wouldLoop) totalWakesSinceInput++;
   });
 
   // /purpose command — view or set the current purpose
