@@ -59,6 +59,18 @@ function isStatePath(filePath: string): boolean {
   return filePath.includes("_state.md");
 }
 
+// Completion-aware: if _state.md says the task is done, the stale-update nag is
+// counterproductive — there's nothing left to track. Lets the model rest.
+function taskMarkedComplete(cwd: string): boolean {
+  try {
+    const content = fs.readFileSync(path.join(cwd, ".think", "_state.md"), "utf-8");
+    const m = content.match(/##\s*Status:\s*([^\n]+)/i);
+    return !!m && /\b(complete|completed|done|finished)\b/i.test(m[1]);
+  } catch {
+    return false;
+  }
+}
+
 const STALE_MESSAGE = `[state-guard] You haven't updated .think/_state.md in the last ${STALE_TURN_THRESHOLD} turns.
 Your progress will be lost if context compacts.
 
@@ -215,6 +227,9 @@ Then continue with your work.`,
       turnsSinceStateWrite++;
     }
     turnHadStateWrite = false;
+
+    // Don't nag about stale state once the task is complete — nothing to track.
+    if (taskMarkedComplete(ctx.cwd)) return;
 
     // Steer if stale
     if (turnsSinceStateWrite >= STALE_TURN_THRESHOLD && stateReadThisSession) {

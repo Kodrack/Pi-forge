@@ -20,6 +20,15 @@
 //   8 consecutive malformed → abort + compact (clear poisoned context)
 //   still failing after     → escalate same as write loops
 //
+// --- Response-text loop detection ---
+// Catches the model emitting the SAME response repeatedly without progress
+// (e.g. "My bad — I didn't apply anything, let me fix that" 4× while only
+// re-reading the same file). The write/malformed detectors miss this entirely
+// because reads are valid and nothing is written. Jaccard on assistant text:
+//
+//   2 near-identical responses in a row → warning steer
+//   3 near-identical responses in a row → abort + compact (break the loop)
+//
 // Zero inference cost — pure string math (Set intersection/union).
 // Works with any harness (LM Studio, Ollama, vLLM, llama.cpp).
 //
@@ -53,6 +62,12 @@ const MAX_HISTORY = 10;
 const MALFORMED_WARN = 4;
 const MALFORMED_COMPACT = 8;
 
+// Response-text loop thresholds
+const TEXT_SIMILARITY_THRESHOLD = 0.85;
+const TEXT_WARN = 1;      // counter 1 = 2nd near-identical response → warn
+const TEXT_RECOVER = 2;   // counter 2 = 3rd near-identical response → break it
+const MIN_TEXT_LEN = 60;  // ignore trivial/short responses
+
 interface WriteEntry {
   words: Set<string>;
   turn: number;
@@ -65,6 +80,8 @@ let compactCount = 0;
 let lastBlockedPath = "";
 let recovering = false;
 let malformedCount = 0;
+let lastTextWords: Set<string> | null = null;
+let repeatedTextCount = 0;
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -74,6 +91,15 @@ function tokenize(text: string): Set<string> {
       .split(/\s+/)
       .filter((w) => w.length > 1)
   );
+}
+
+function extractText(message: any): string {
+  if (!message?.content) return "";
+  return (message.content as any[])
+    .filter((b) => b?.type === "text")
+    .map((b) => b?.text ?? "")
+    .join(" ")
+    .trim();
 }
 
 function jaccard(a: Set<string>, b: Set<string>): number {
@@ -118,6 +144,8 @@ function resetState(): void {
   interventionCount = 0;
   lastBlockedPath = "";
   malformedCount = 0;
+  lastTextWords = null;
+  repeatedTextCount = 0;
 }
 
 async function doCompact(ctx: any, instructions: string): Promise<void> {
@@ -307,5 +335,54 @@ export default function (pi: ExtensionAPI) {
       },
       { deliverAs: "steer" }
     );
+  });
+
+  // --- RESPONSE-TEXT LOOP DETECTION ---
+  // Catches the model repeating the same response without progress (e.g.
+  // "My bad — I didn't apply anything, let me fix that" 4× while only re-reading
+  // a file). The write/malformed detectors miss this because reads are valid and
+  // nothing is written.
+  pi.on("turn_end", async (event: any, ctx: any) => {
+    if (!isEnabled() || recovering) return;
+
+    const text = extractText(event.message);
+    if (text.length < MIN_TEXT_LEN) return; // ignore trivial/short responses
+
+    const words = tokenize(text);
+    const sim = lastTextWords ? jaccard(words, lastTextWords) : 0;
+    if (lastTextWords && sim > TEXT_SIMILARITY_THRESHOLD) {
+      repeatedTextCount++;
+    } else {
+      repeatedTextCount = 0;
+    }
+    lastTextWords = words;
+
+    // 3rd near-identical response in a row → break the loop
+    if (repeatedTextCount >= TEXT_RECOVER) {
+      ctx.ui.notify(
+        `loop-guard: same response ${repeatedTextCount + 1}× in a row with no progress — compacting to break loop`,
+        "warn"
+      );
+      setTimeout(() => recover(pi, ctx), 100);
+      return;
+    }
+
+    // 2nd near-identical response → warn
+    if (repeatedTextCount >= TEXT_WARN) {
+      await pi.sendMessage(
+        {
+          customType: "text_loop_warning",
+          content:
+            `[loop-guard] You've given nearly the same response ${repeatedTextCount + 1} turns in a row without making progress. ` +
+            `STOP repeating. Take a concrete DIFFERENT action now (write/edit a file), or stop and ask the user. ` +
+            `Do NOT restate the same intention again.`,
+          display: {
+            label: "loop-guard",
+            content: `Repeated response ${repeatedTextCount + 1}× — possible loop`,
+          },
+        },
+        { deliverAs: "steer" }
+      );
+    }
   });
 }

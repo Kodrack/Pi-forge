@@ -11,6 +11,8 @@
 // Install: copy to ~/.pi/agent/extensions/analysis-guard.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as fs from "fs";
+import * as path from "path";
 
 // ---------- THRESHOLDS ----------
 // Minimum response text length to be considered "analysis worth saving".
@@ -50,6 +52,19 @@ function hadFileWrite(toolResults: any[]): boolean {
   });
 }
 
+// Completion-aware: if .think/_state.md says the task is done, don't nag the
+// model to persist analysis — the answer's already delivered and the task is
+// over. Avoids the post-completion step-file/state cascade on one-shot tasks.
+function taskMarkedComplete(cwd: string): boolean {
+  try {
+    const content = fs.readFileSync(path.join(cwd, ".think", "_state.md"), "utf-8");
+    const m = content.match(/##\s*Status:\s*([^\n]+)/i);
+    return !!m && /\b(complete|completed|done|finished)\b/i.test(m[1]);
+  } catch {
+    return false;
+  }
+}
+
 // ---------- EXTENSION ----------
 export default function (pi: ExtensionAPI) {
   // Track per-turn whether any write/edit happened.
@@ -87,6 +102,10 @@ export default function (pi: ExtensionAPI) {
 
     // Only trigger if: response was long AND no files were written.
     if (textLen < MIN_ANALYSIS_CHARS || wroteFile) return;
+
+    // Don't force a step-file write if the task is already complete — nothing
+    // left to preserve for resumption, the answer's been delivered.
+    if (taskMarkedComplete(ctx.cwd)) return;
 
     ctx.ui.notify(
       `analysis-guard: ${textLen} char response with no file write — injecting step-file reminder.`,
