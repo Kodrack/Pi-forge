@@ -28,9 +28,10 @@ const MAX_THINKING_CHARS = 15000;  // ~3.75k tokens — soft, steers next turn
 const MAX_THINKING_LINES = 375;    // secondary line-count check
 
 // Hard mid-stream abort cap, applied to EITHER channel's live char count.
-// Set above a legitimately long answer (~8k chars) but well below a runaway
-// spiral (the loop we saw hit ~40k chars / 10.7k tokens). Tune as needed.
-const HARD_ABORT_CHARS = 18000;
+// 4000 chars ≈ 1k tokens ≈ ~650 words — already well past a normal short
+// response, so a runaway gets killed fast. NOTE: this will also clip a
+// genuinely long answer (e.g. a detailed research write-up) mid-stream.
+const HARD_ABORT_CHARS = 4000;
 
 // The correction message injected as a steering message after a long thinking block.
 // Mirrors the .think/ workflow from AGENTS.md so the model knows exactly what to do.
