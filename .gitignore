@@ -3,3 +3,5 @@ node_modules/
 *.js.map
 .think/
 .think-sessions/
+knowledge/*
+!knowledge/.gitkeep
