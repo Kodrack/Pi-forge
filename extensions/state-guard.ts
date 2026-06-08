@@ -59,6 +59,18 @@ function isStatePath(filePath: string): boolean {
   return filePath.includes("_state.md");
 }
 
+// The canonical ".think/" brain files. These must ALWAYS live in .think/ —
+// never inside the project/deliverable folder (e.g. test/_state.md). The model
+// often conflates "the folder I'm building in" with its brain dir; when it
+// does, every guard that reads .think/_state.md goes blind.
+function isBrainFile(filePath: string): boolean {
+  const base = (filePath.split(/[\\/]/).pop() || "").trim();
+  return (
+    /^(_state|_plan|_summary|_purpose|_decisions|_knowledge|_knowledge-manifest)\.md$/i.test(base) ||
+    /^step-\d+\.md$/i.test(base)
+  );
+}
+
 // Completion-aware: if _state.md says the task is done, the stale-update nag is
 // counterproductive — there's nothing left to track. Lets the model rest.
 function taskMarkedComplete(cwd: string): boolean {
@@ -128,7 +140,29 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     const toolName = event.toolName ?? "";
     const input = event.input as Record<string, any> ?? {};
-    const filePath = input.path ?? input.file_path ?? "";
+    let filePath = input.path ?? input.file_path ?? "";
+
+    // BRAIN FILES MUST LIVE IN .think/ — but don't make the model get the path
+    // right. If it targets a brain file (_state.md, _plan.md, step-NNN.md, …)
+    // anywhere outside .think/ (e.g. test/_state.md), silently REWRITE the path
+    // to .think/<base> by mutating event.input in place (pi supports this; see
+    // ToolCallEventResult docs). Removes the decision instead of correcting it.
+    // Applies to write/edit AND read, so the model can use any path and still
+    // hit the one canonical file every guard reads.
+    if (
+      (toolName === "write" || toolName === "edit" || toolName === "read") &&
+      filePath &&
+      isBrainFile(filePath) &&
+      !isThinkAtRoot(filePath, ctx.cwd)
+    ) {
+      const base = filePath.split(/[\\/]/).pop() || "_state.md";
+      const corrected = `.think/${base}`;
+      if (input.path !== undefined) input.path = corrected;
+      if (input.file_path !== undefined) input.file_path = corrected;
+      filePath = corrected; // keep downstream tracking in sync
+      ctx.ui.notify(`state-guard: redirected ${base} → .think/${base} (brain files live in .think/)`, "info");
+      // fall through — it's now a .think/ write and gets tracked below
+    }
 
     // Track reads of _state.md
     if (toolName === "read" && isStatePath(filePath)) {
