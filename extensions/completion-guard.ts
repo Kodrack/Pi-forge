@@ -59,8 +59,13 @@ export default function (pi: ExtensionAPI) {
   if (!isEnabled()) return;
 
   let changesThisTurn = 0;
+  // Announce completion exactly once, on the rising edge (not every turn).
+  let announcedComplete = false;
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    // Re-arm the completion announcement for the new session so it fires on this
+    // session's first real completion (the latch must not carry across sessions).
+    announcedComplete = taskMarkedComplete(ctx.cwd);
     ctx.ui.notify(
       `completion-guard active — blocks edits after _state.md Status: complete (max ${MAX_CHANGES_PER_TURN} changes/turn)`,
       "info"
@@ -69,6 +74,19 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("turn_start", async () => {
     changesThisTurn = 0;
+  });
+
+  // Announce completion the moment the task is marked done — regardless of
+  // whether a compaction follows. Fires once on the rising edge; re-arms when a
+  // new task flips _state.md back to in-progress.
+  pi.on("turn_end", async (_event: any, ctx: any) => {
+    const complete = taskMarkedComplete(ctx.cwd);
+    if (complete && !announcedComplete) {
+      announcedComplete = true;
+      ctx.ui.notify("✓ pi detected the task is complete — stopping and waiting for your next instruction.", "info");
+    } else if (!complete) {
+      announcedComplete = false; // new/ongoing task — re-arm for its completion
+    }
   });
 
   pi.on("tool_call", async (event: any, ctx: any) => {

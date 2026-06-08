@@ -1,19 +1,36 @@
 // thinking-guard.ts
-// Detects runaway thinking/reasoning blocks and injects a correction steering
-// message telling the model to stop overthinking, write conclusions to .think/
-// files, and keep responses short.
+// Detects runaway thinking/reasoning AND runaway response text, and stops it.
 //
-// Works alongside incremental-guard.ts (which covers write/edit tool calls).
-// This guard covers the reasoning text itself — the looping that incremental-guard
-// can't catch because it never becomes a tool call.
+// Two layers:
+//   1. LIVE mid-stream HARD ABORT — watches BOTH the thinking channel
+//      (thinking_delta) and the response-text channel (text_delta) as they
+//      stream. If either blows past HARD_ABORT_CHARS, it calls ctx.abort() to
+//      KILL the generation immediately (catches verbatim-repetition spirals that
+//      would otherwise run to the token cap), then steers "commit and think
+//      briefly". This is the only thing that can stop a single runaway
+//      generation — every other guard acts only at turn boundaries.
+//   2. turn_end soft steer — if a (non-aborted) thinking block exceeded the
+//      softer MAX_THINKING_CHARS, steer the NEXT turn to think less.
+//
+// The text-channel coverage matters: a spiral emitted as plain response text
+// (not inside a <thinking> block) is invisible to thinking-only checks.
+//
+// Works alongside incremental-guard.ts (write/edit) and loop-guard.ts
+// (cross-turn repetition). The real prevention is inference settings
+// (repeat_penalty) — this is the safety net.
 //
 // Install: copy to ~/.pi/agent/extensions/thinking-guard.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ---------- LIMITS (tune these) ----------
-const MAX_THINKING_CHARS = 15000;  // ~3.75k tokens
+const MAX_THINKING_CHARS = 15000;  // ~3.75k tokens — soft, steers next turn
 const MAX_THINKING_LINES = 375;    // secondary line-count check
+
+// Hard mid-stream abort cap, applied to EITHER channel's live char count.
+// Set above a legitimately long answer (~8k chars) but well below a runaway
+// spiral (the loop we saw hit ~40k chars / 10.7k tokens). Tune as needed.
+const HARD_ABORT_CHARS = 18000;
 
 // The correction message injected as a steering message after a long thinking block.
 // Mirrors the .think/ workflow from AGENTS.md so the model knows exactly what to do.
@@ -39,50 +56,84 @@ function getThinkingText(message: any): string {
 
 // ---------- EXTENSION ----------
 export default function (pi: ExtensionAPI) {
-  // Track thinking chars live during streaming so we can show a warning early.
-  // The hard enforcement happens at turn_end (where we can inject steering).
+  // Live char counts per channel during streaming.
   let liveThinkingChars = 0;
+  let liveTextChars = 0;
   let liveWarnFired = false;
+  let abortedThisTurn = false;
+
+  // Kill a runaway generation mid-stream and steer the model to think briefly.
+  async function abortRunaway(ctx: any, channel: string, chars: number): Promise<void> {
+    abortedThisTurn = true;
+    try { ctx.abort(); } catch {}
+    ctx.ui.notify(`thinking-guard: ABORTED runaway ${channel} (${chars} chars) — likely a loop/overthinking`, "warn");
+    await pi.sendMessage(
+      {
+        customType: "output_guard_abort",
+        content:
+          `[thinking-guard] Your ${channel} ran past ${chars} characters without finishing — you were looping/overthinking, ` +
+          `so the generation was STOPPED.\n\n` +
+          `Do NOT re-derive what you already wrote. Instead:\n` +
+          `1. Pick ONE interpretation and commit to it.\n` +
+          `2. Write a one-sentence conclusion to .think/_state.md.\n` +
+          `3. Take a concrete next action (write/edit a file) OR ask the user ONE clarifying question.\n` +
+          `4. Keep your next response under 100 words. Think briefly — short thinking beats long thinking.`,
+        display: { label: "thinking-guard", content: `Aborted runaway ${channel} (${chars} chars)` },
+      },
+      { deliverAs: "steer" }
+    );
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(
-      `thinking-guard active (max ${MAX_THINKING_CHARS} chars / ${MAX_THINKING_LINES} lines of thinking per turn)`,
+      `thinking-guard active (soft ${MAX_THINKING_CHARS} chars/turn, hard abort at ${HARD_ABORT_CHARS} — thinking AND text)`,
       "info"
     );
   });
 
-  // Live tracking during streaming — shows a warning when the model is mid-spiral.
+  // Live mid-stream tracking — warns early, and HARD-ABORTS either channel if it runs away.
   pi.on("message_update", async (event, ctx) => {
     const ae = event.assistantMessageEvent as any;
 
-    if (ae.type === "thinking_start") {
-      liveThinkingChars = 0;
-      liveWarnFired = false;
-    }
+    if (ae.type === "thinking_start") { liveThinkingChars = 0; liveWarnFired = false; }
+    if (ae.type === "text_start") { liveTextChars = 0; }
 
     if (ae.type === "thinking_delta") {
       liveThinkingChars += (ae.content as string)?.length ?? 0;
-
-      // Early warning at 80% of the limit — visible in the TUI while streaming.
       if (!liveWarnFired && liveThinkingChars > MAX_THINKING_CHARS * 0.8) {
         liveWarnFired = true;
-        ctx.ui.notify(
-          `thinking-guard: thinking block approaching limit (${liveThinkingChars} chars so far)…`,
-          "warn"
-        );
+        ctx.ui.notify(`thinking-guard: thinking approaching limit (${liveThinkingChars} chars)…`, "warn");
+      }
+      if (!abortedThisTurn && liveThinkingChars > HARD_ABORT_CHARS) {
+        await abortRunaway(ctx, "thinking", liveThinkingChars);
+      }
+    }
+
+    // The channel that was invisible before: runaway plain response text.
+    if (ae.type === "text_delta") {
+      liveTextChars += (ae.content as string)?.length ?? 0;
+      if (!abortedThisTurn && liveTextChars > HARD_ABORT_CHARS) {
+        await abortRunaway(ctx, "response text", liveTextChars);
       }
     }
   });
 
   // Hard enforcement at turn end — inject a steering message if thinking was too long.
   pi.on("turn_end", async (event, ctx) => {
+    const wasAborted = abortedThisTurn;
+
+    // Reset live counters for next turn.
+    liveThinkingChars = 0;
+    liveTextChars = 0;
+    liveWarnFired = false;
+    abortedThisTurn = false;
+
+    // Already steered via mid-stream abort — don't double up.
+    if (wasAborted) return;
+
     const thinking = getThinkingText(event.message);
     const chars = thinking.length;
     const lines = thinking.split(/\r?\n/).length;
-
-    // Reset live counter for next turn.
-    liveThinkingChars = 0;
-    liveWarnFired = false;
 
     if (chars <= MAX_THINKING_CHARS && lines <= MAX_THINKING_LINES) return;
 

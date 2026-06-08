@@ -47,7 +47,7 @@ FRONTEND/UI TASKS (HTML, CSS, JS with visual output):
 - After any JS edit: browser test is REQUIRED — syntax check (node -c) catches syntax, not runtime errors
 - If something breaks: STOP, revert to working state, implement ONE change at a time
 
-Plan the implementation as numbered steps in _plan.md. Do ONLY what the user asked — do NOT add refactors, tests, extra features, or "improvements" they didn't request. Implement one step per turn, updating _state.md after each. When every planned step is done, set _state.md "## Status: complete", give a ONE-LINE summary, and STOP — hand back to the user. Do not invent more work. If the task is a one-shot answer (a question, a search, a lookup), answer it, set Status: complete, and STOP.`;
+Plan the implementation as numbered steps in _plan.md. Do ONLY what the user asked — do NOT add refactors, tests, extra features, or "improvements" they didn't request. Work THROUGH your planned steps: after finishing a step, update _state.md and CONTINUE to the next step automatically — do NOT stop and wait for the user between steps. Keep going until EVERY planned step is done; only then set _state.md "## Status: complete", give a ONE-LINE summary, and STOP. Do not invent more work beyond the plan. If the task is a one-shot answer (a question, a search, a lookup), answer it, set Status: complete, and STOP.`;
 
 function isEnabled(): boolean {
   try {
