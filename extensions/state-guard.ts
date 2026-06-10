@@ -1,10 +1,14 @@
 // state-guard.ts
 // Hard-enforces the .think/_state.md workflow on local LLMs.
 //
-// Three enforcement points:
+// Four enforcement points:
 //   1. Session start: steers model to read _state.md before anything else
 //   2. Tool calls: blocks source file reads until _state.md has been read
 //   3. Turn end: steers model to update _state.md if stale (every N turns)
+//   4. Reopen guard: if a new user prompt arrives while _state.md says
+//      "Status: complete", blocks writes/edits to non-.think/ files until
+//      _state.md has been rewritten (stale-complete state survives compaction
+//      and silently poisons recovery — turn discipline into a hard rule)
 //
 // Install: copy to ~/.pi/agent/extensions/state-guard.ts
 
@@ -121,6 +125,14 @@ export default function (pi: ExtensionAPI) {
   let stateFileExists = false;
   let readReminderSent = false;
   let turnHadStateWrite = false;
+  let reopenPending = false; // user sent a new prompt while _state.md said complete
+
+  // REOPEN GUARD: each user input, check whether _state.md claims the task is
+  // done. If so, the model must rewrite _state.md before touching source files.
+  pi.on("input", (_event: any) => {
+    reopenPending = taskMarkedComplete(process.cwd());
+    return { action: "continue" as const };
+  });
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     const stateFile = path.join(ctx.cwd, ".think", "_state.md");
@@ -176,6 +188,7 @@ export default function (pi: ExtensionAPI) {
       turnHadStateWrite = true;
       turnsSinceStateWrite = 0;
       stateFileExists = true;
+      reopenPending = false; // state rewritten — reopen satisfied
       return;
     }
 
@@ -192,6 +205,25 @@ export default function (pi: ExtensionAPI) {
         };
       }
       return; // at root, allow it
+    }
+
+    // REOPEN GUARD: _state.md says "complete" but the user sent a new prompt.
+    // Hard-block source writes/edits until _state.md is rewritten — otherwise
+    // the stale "complete" record survives the next compaction and the model
+    // recovers into a state file that lies about reality.
+    if (reopenPending && (toolName === "write" || toolName === "edit")) {
+      return {
+        block: true,
+        reason:
+          `BLOCKED: .think/_state.md still says "Status: complete", but the user sent a new request. ` +
+          `The state file is stale — fix it BEFORE editing source files.\n` +
+          `1. Rewrite .think/_state.md NOW with:\n` +
+          `   ## Status: in-progress\n` +
+          `   ## Task: [the user's new request or reported problem]\n` +
+          `   ## Next Action: [your first concrete step]\n` +
+          `2. THEN retry this edit.\n` +
+          `Do NOT retry this tool call until _state.md is updated.`,
+      };
     }
 
     // Allow non-file tools
@@ -298,7 +330,8 @@ Then continue with your work.`,
         `state-guard: _state.md ${exists ? "exists" : "MISSING"} | ` +
         `read this session: ${stateReadThisSession} | ` +
         `turns since write: ${turnsSinceStateWrite} | ` +
-        `stale threshold: ${STALE_TURN_THRESHOLD} turns`,
+        `stale threshold: ${STALE_TURN_THRESHOLD} turns | ` +
+        `reopen pending: ${reopenPending}`,
         "info"
       );
     },

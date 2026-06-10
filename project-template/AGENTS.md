@@ -72,6 +72,11 @@ After every action, rewrite `_state.md` with:
 ## Read First: [which 1-2 files to read to continue]
 ```
 
+### 4b. Reopening a Completed Task
+If `_state.md` says `Status: complete` and the user reports a problem or makes a new request:
+rewrite `_state.md` FIRST (Status: in-progress, the new problem, next action) — BEFORE any other tool call.
+A stale "complete" state file is a lie that survives compaction.
+
 ### 5. Summarize, Don't Accumulate
 After every 3-5 steps, write `_summary.md` with a condensed version of all progress so far. This prevents needing to read old step files.
 
