@@ -276,7 +276,7 @@ Pi reads global settings from `~/.pi/agent/settings.json`. This sets your defaul
   "compaction": {
     "enabled": true,
     "reserveTokens": 8192,
-    "keepRecentTokens": 28000
+    "keepRecentTokens": 12000
   }
 }
 ```
@@ -287,7 +287,7 @@ Why each line:
 - `hideThinkingBlock: false` — render the thinking block in the TUI so you can see what the model is reasoning about (vs. staring at a spinner).
 - `quietStartup: false` — show the full startup banner (loaded skills, context files, extensions) so you can verify everything wired up.
 - `treeFilterMode: "all"` — `/tree` inside Pi shows every event (tool calls, intermediate steps).
-- `compaction.keepRecentTokens: 28000` — for a 50k-context model, keep the most recent 28k of conversation verbatim and only summarise older turns.
+- `compaction.keepRecentTokens: 12000` — for a 50k-context model, keep the most recent 12k of conversation verbatim and summarise everything older. Keep this LOW relative to the window: post-compaction context is roughly `keepRecentTokens` + summary, so a high value (e.g. 28k+) leaves the window nearly full after compaction and causes back-to-back compaction loops.
 - `compaction.reserveTokens: 8192` — leave 8k of room for the model's reply before triggering compaction.
 
 ---
