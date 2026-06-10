@@ -4,29 +4,65 @@
 //
 // Two thresholds:
 //   WARN_PERCENT  (65%) — "start writing state now, while you're still coherent"
-//   URGENT_PERCENT (80%) — "stop everything, write full state, session ending soon"
+//   FORCE_COMPACT_PERCENT (80%) — force compaction with aggressive summarization
+//
+// After each compaction, workflow rules are re-injected: the full AGENTS.md
+// every FULL_AGENTS_EVERY-th compaction, a ~250-token condensed digest in
+// between (set FULL_AGENTS_EVERY = 1 for full AGENTS.md every time).
 //
 // Install: copy to ~/.pi/agent/extensions/context-monitor.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
-function readAgentsMd(): string | null {
-  const agentsPath = path.join(process.cwd(), "AGENTS.md");
-  if (fs.existsSync(agentsPath)) {
-    try {
-      return fs.readFileSync(agentsPath, "utf-8");
-    } catch {
-      return null;
-    }
+// The PiForge workflow contract lives at ~/.pi/agent/AGENTS.md
+// (copied there by install.sh, symlinked to the repo by dev-link.sh).
+// A project-local AGENTS.md is optional, holds project-specific rules, and is
+// ALWAYS injected in full alongside the contract (even on digest compactions).
+function readFileOrNull(p: string): string | null {
+  try {
+    return fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+function readGlobalAgentsMd(): string | null {
+  return readFileOrNull(path.join(os.homedir(), ".pi", "agent", "AGENTS.md"));
+}
+
+function readProjectAgentsMd(): string | null {
+  return readFileOrNull(path.join(process.cwd(), "AGENTS.md"));
 }
 
 // ---------- THRESHOLDS ----------
 const WARN_PERCENT   = 65;   // warning — write state now
 const FORCE_COMPACT_PERCENT = 80; // force compaction — no warning, just compact
+
+// How often the FULL AGENTS.md is re-injected after compaction.
+// 1 = full AGENTS.md every compaction (legacy behavior).
+// 4 = full on compaction 1, 5, 9, ... — condensed digest (~250 tokens) in between.
+const FULL_AGENTS_EVERY = 4;
+
+// Sent to the compaction summarizer — keeps the summary tiny since durable
+// state lives in .think/ on disk, but protects findings not yet written there.
+const COMPACT_INSTRUCTIONS =
+  "Compress aggressively. Do NOT reproduce file contents, tool outputs, or step-by-step reasoning — " +
+  "all durable state lives in .think/ files on disk. Keep ONLY: the task one-liner, files modified " +
+  "this session, and any finding or error NOT yet written to a .think/ file. Target under 500 tokens.";
+
+// Condensed AGENTS.md — the load-bearing rules only. Injected after compactions
+// where the full AGENTS.md is skipped.
+const AGENTS_DIGEST = `[context-monitor] Context was compacted. Core workflow rules (condensed):
+1. Read .think/_state.md FIRST, before anything else.
+2. Do ONE thing per turn, then update .think/_state.md and STOP.
+3. Write EVERY finding, decision, and error to a .think/step-NNN.md file BEFORE responding — anything not on disk is destroyed at the next compaction.
+4. Read at most 2 files per turn. Never hold whole codebases in context.
+5. No code without _plan.md. Small edits only: skeleton first, then fill in with edits.
+6. Keep responses under 200 words. No explanations unless asked.
+Full rules are in ~/.pi/agent/AGENTS.md on disk — re-read it if unsure.`;
 
 // ---------- STEERING MESSAGES ----------
 const WARN_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
@@ -48,6 +84,7 @@ function formatMessage(template: string, percent: number): string {
 // ---------- EXTENSION ----------
 export default function (pi: ExtensionAPI) {
   let warnFired = false;
+  let compactionCount = 0;
 
   pi.on("session_start", async (_event, ctx) => {
     const usage = ctx.getContextUsage();
@@ -81,26 +118,11 @@ export default function (pi: ExtensionAPI) {
 
       try {
         (ctx as any).compact?.({
-          customInstructions: "Context was auto-compacted at 80%. Continue from .think/_state.md.",
+          customInstructions: COMPACT_INSTRUCTIONS,
           onComplete: async () => {
             ctx.ui.notify("context-monitor: compaction complete", "info");
-
-            // Re-inject AGENTS.md after compaction
-            const agentsMd = readAgentsMd();
-            if (agentsMd) {
-              await pi.sendMessage(
-                {
-                  customType: "agents_md_reinjection",
-                  content: `[context-monitor] Context was compacted. Re-injecting AGENTS.md rules:\n\n---\n${agentsMd}\n---\n\nNow read .think/_state.md and continue from where you left off.`,
-                  display: {
-                    label: "context-monitor",
-                    content: "AGENTS.md re-injected after compaction",
-                  },
-                },
-                { deliverAs: "steer" }
-              );
-              ctx.ui.notify("context-monitor: AGENTS.md re-injected", "info");
-            }
+            // Rule re-injection happens in the session_compact handler below,
+            // which fires for ALL compactions (auto, manual, extension).
           },
           onError: (err: Error) => {
             ctx.ui.notify(`context-monitor: compaction failed — ${err.message}`, "error");
@@ -133,6 +155,52 @@ export default function (pi: ExtensionAPI) {
         { deliverAs: "steer" }
       );
     }
+  });
+
+  // Fires for EVERY compaction — Pi-native auto, manual /compact, and
+  // extension-triggered — so the counter is deterministic code and never
+  // misses one. Re-injects full AGENTS.md every FULL_AGENTS_EVERY-th
+  // compaction, the condensed digest otherwise.
+  pi.on("session_compact", async (_event, ctx) => {
+    compactionCount++;
+    const globalMd = readGlobalAgentsMd();
+    const projectMd = readProjectAgentsMd();
+    // No global install? The project file acts as the contract (legacy setups).
+    const contractMd = globalMd ?? projectMd;
+    const extraMd = globalMd ? projectMd : null;
+
+    // OURS (contract): full every FULL_AGENTS_EVERY-th compaction, digest otherwise.
+    const useFull = contractMd && (compactionCount - 1) % FULL_AGENTS_EVERY === 0;
+    const rulesPart = useFull
+      ? `[context-monitor] Context was compacted. Re-injecting AGENTS.md rules:\n\n---\n${contractMd}\n---`
+      : AGENTS_DIGEST;
+    // THEIRS (project AGENTS.md): always appended IN FULL, every reinjection.
+    const projectPart = extraMd
+      ? `\n\nPROJECT-SPECIFIC RULES (project AGENTS.md, always in full):\n---\n${extraMd}\n---`
+      : "";
+    const content = `${rulesPart}${projectPart}\n\nNow read .think/_state.md and continue from where you left off.`;
+    await pi.sendMessage(
+      {
+        customType: "agents_md_reinjection",
+        content,
+        display: {
+          label: "context-monitor",
+          content:
+            (useFull
+              ? `full AGENTS.md re-injected (compaction #${compactionCount})`
+              : `condensed rules digest injected (compaction #${compactionCount}, full every ${FULL_AGENTS_EVERY})`) +
+            (extraMd ? " + project AGENTS.md in full" : ""),
+        },
+      },
+      { deliverAs: "steer" }
+    );
+    ctx.ui.notify(
+      (useFull
+        ? `context-monitor: full AGENTS.md re-injected (compaction #${compactionCount})`
+        : `context-monitor: condensed digest injected (compaction #${compactionCount})`) +
+        (extraMd ? " + project rules" : ""),
+      "info"
+    );
   });
 
   // /context-monitor command — show live usage.

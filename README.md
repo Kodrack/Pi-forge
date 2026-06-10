@@ -16,9 +16,9 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 |---|---|---|
 | `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars — forces skeleton → small edit workflow | on |
 | `thinking-guard.ts` | Injects correction when thinking block > 2000 chars — stops reasoning spirals | on |
-| `context-monitor.ts` | Steers model to write state files at 65% context, urgent at 80% | on |
+| `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
-| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders) | on |
+| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten | on |
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
@@ -271,14 +271,14 @@ bash install.sh
 Then:
 1. Start LM Studio, load your model, start the server on `:1234`
 2. Edit `~/.pi/agent/models.json` — set the model `id` to match your LM Studio model
-3. Copy `project-template/AGENTS.md` into any project you work on
+3. The workflow contract is installed globally (`~/.pi/agent/AGENTS.md`) — optionally add a project-local `AGENTS.md` containing ONLY project-specific rules
 4. Run `pi` from your project directory
 
 On startup you should see:
 ```
 incremental-guard active (max 100 lines / 6000 chars per write/edit)
 thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
-context-monitor active — warn at 65%, urgent at 80% (window: XXXXX tokens)
+context-monitor active — warn at 65%, force compact at 80% (window: XXXXX tokens)
 analysis-guard active (triggers on responses >1000 chars with no file write)
 session-manager: session-001 — .think/ ready
 ```
@@ -402,5 +402,5 @@ piforge/
 │   ├── settings.json                   ← Pi global settings
 │   └── piforge.json                    ← extension toggles (plan-clarify + loop-guard off by default)
 └── project-template/
-    └── AGENTS.md                       ← drop in any project
+    └── AGENTS.md                       ← installed globally to ~/.pi/agent/AGENTS.md
 ```

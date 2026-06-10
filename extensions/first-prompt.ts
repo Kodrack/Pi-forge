@@ -13,16 +13,25 @@ import * as os from "os";
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
 
-function readAgentsMd(): string | null {
-  const agentsPath = path.join(process.cwd(), "AGENTS.md");
-  if (fs.existsSync(agentsPath)) {
-    try {
-      return fs.readFileSync(agentsPath, "utf-8");
-    } catch {
-      return null;
-    }
+// The PiForge workflow contract lives at ~/.pi/agent/AGENTS.md
+// (copied there by install.sh, symlinked to the repo by dev-link.sh).
+// A project-local AGENTS.md is optional, holds project-specific rules, and is
+// always appended in full after the contract.
+function readFileOrNull(p: string): string | null {
+  try {
+    return fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+function readAgentsMd(): string | null {
+  const globalMd = readFileOrNull(path.join(os.homedir(), ".pi", "agent", "AGENTS.md"));
+  const projectMd = readFileOrNull(path.join(process.cwd(), "AGENTS.md"));
+  // No global install? The project file acts as the contract (legacy setups).
+  if (!globalMd) return projectMd;
+  if (!projectMd) return globalMd;
+  return `${globalMd}\n\n---\n# PROJECT-SPECIFIC RULES (project AGENTS.md)\n${projectMd}`;
 }
 
 const APPEND = `

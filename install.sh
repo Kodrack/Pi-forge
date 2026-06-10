@@ -48,6 +48,14 @@ echo "    cp -r $PIFORGE_DIR/knowledge/ <your-project>/knowledge/"
 cp "$PIFORGE_DIR/skills/incremental-codegen/SKILL.md" "$PI_DIR/skills/incremental-codegen/SKILL.md"
 echo "✓ Skill installed: incremental-codegen"
 
+# ---------- 5b. Global AGENTS.md (workflow contract) ----------
+# Pi loads ~/.pi/agent/AGENTS.md natively as a GLOBAL context file in every
+# project, before any project-local AGENTS.md. The PiForge workflow contract
+# is static — install it once here; per-project AGENTS.md files are optional
+# and should contain ONLY project-specific rules.
+cp "$PIFORGE_DIR/project-template/AGENTS.md" "$PI_DIR/AGENTS.md"
+echo "✓ Global AGENTS.md installed: ~/.pi/agent/AGENTS.md (applies to every project)"
+
 # ---------- 6. Config files (prompt before overwriting) ----------
 # models.json  — LM Studio provider + model list (edit model id to match yours)
 # settings.json — defaultProvider/Model, thinking level, compaction tuned for 50k context:
@@ -83,7 +91,8 @@ echo ""
 echo "Next steps:"
 echo "  1. Start LM Studio and load your model (server on :1234)"
 echo "  2. Edit ~/.pi/agent/models.json — set your model id to match LM Studio"
-echo "  3. Copy project-template/AGENTS.md into any project you work on"
+echo "  3. (optional) Add a project AGENTS.md with ONLY project-specific rules —"
+echo "     the workflow contract is now global (~/.pi/agent/AGENTS.md)"
 echo "  4. Run: pi"
 echo ""
 echo "  You should see these on startup:"
