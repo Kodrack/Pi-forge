@@ -335,7 +335,7 @@ Write a clear, actionable summary (max 400 words) using ONLY the content above. 
     let rawOut = "";
     try {
       const { stdout } = await execAsync(
-        `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+        `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
         { cwd: searchDir, timeout: SUB_PI_TIMEOUT }
       );
       rawOut = (stdout || "").trim();

@@ -444,7 +444,7 @@ ${chunks[k]}
 
     try {
       const { stdout } = await execAsync(
-        `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${pf} < /dev/null`,
+        `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${pf}" < /dev/null`,
         { cwd, timeout: SUB_PI_TIMEOUT }
       );
       chunkSummaries.push((stdout || "").trim());
@@ -477,7 +477,7 @@ ${merged}`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${mf} < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${mf}" < /dev/null`,
       { cwd, timeout: SUB_PI_TIMEOUT }
     );
     let output = (stdout || "").trim();
@@ -578,7 +578,7 @@ async function processFile(
   const startTime = Date.now();
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
       { cwd, timeout: SUB_PI_TIMEOUT }
     );
     let output = (stdout || "").trim();
@@ -715,7 +715,7 @@ Output ONLY the answer.`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
       { cwd, timeout: SUB_PI_TIMEOUT }
     );
     const answer = (stdout || "").trim();
