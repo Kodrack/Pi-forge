@@ -158,7 +158,7 @@ ${content}`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
       { timeout: SUB_PI_TIMEOUT }
     );
     const result = (stdout || "").trim();
@@ -310,7 +310,7 @@ Otherwise NO.`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p @${promptFile} < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
       { timeout: SUB_PI_TIMEOUT }
     );
     const reply = (stdout || "").trim().toUpperCase();
