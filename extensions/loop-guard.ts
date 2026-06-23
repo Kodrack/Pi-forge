@@ -310,17 +310,17 @@ export default function (pi: ExtensionAPI) {
 
       // Escalate to auto-recovery after 3 blocked attempts
       if (interventionCount >= 3) {
-        (ctx as any).blockToolCall(
-          `[loop-guard] ${interventionCount} interventions failed. Initiating auto-recovery.`
-        );
         setTimeout(() => recover(pi, ctx), 100);
-        return;
+        return {
+          block: true,
+          reason: `[loop-guard] ${interventionCount} interventions failed. Initiating auto-recovery.`,
+        };
       }
 
-      (ctx as any).blockToolCall(
-        `[loop-guard] LOOP DETECTED — you've written "${filePath.split("/").pop()}" ${history.length} times with ${Math.round(similarity * 100)}% similarity. ${getEscapeHint(filePath)}`
-      );
-      return;
+      return {
+        block: true,
+        reason: `[loop-guard] LOOP DETECTED — you've written "${filePath.split("/").pop()}" ${history.length} times with ${Math.round(similarity * 100)}% similarity. ${getEscapeHint(filePath)}`,
+      };
     }
 
     // --- WARN ---
