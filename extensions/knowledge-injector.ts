@@ -518,9 +518,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    (ctx as any).blockToolCall(
-      "[knowledge-injector] Write .think/_knowledge.md acknowledging the loaded knowledge patterns before writing any code."
-    );
+    return {
+      block: true,
+      reason:
+        "[knowledge-injector] Write .think/_knowledge.md acknowledging the loaded knowledge patterns before writing any code.",
+    };
   });
 
   pi.on("turn_end", async () => {
