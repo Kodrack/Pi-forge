@@ -17,7 +17,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 const MAX_RESPONSE_CHARS = 20000; // ~5k tokens (4 chars per token)
 const MAX_RESPONSE_LINES = 500;
 
-const CORRECTION_MESSAGE = `[response-guard] Your response exceeded 5000 tokens. You're reasoning out loud instead of acting.
+const CORRECTION_MESSAGE = `[response-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+Your response exceeded 5000 tokens. You're reasoning out loud instead of acting.
 
 STOP. Do not continue.
 

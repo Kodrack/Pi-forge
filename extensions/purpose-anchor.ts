@@ -190,7 +190,8 @@ export default function (pi: ExtensionAPI) {
     if (state) files.push(".think/_state.md");
     if (summary) files.push(".think/_summary.md");
 
-    let content = `[purpose-anchor] Context was just compacted. You lost conversation history.
+    let content = `[purpose-anchor] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.
+Context was just compacted. You lost conversation history.
 Your progress is saved on disk. Read it back NOW.
 
 REQUIRED ACTIONS — do these BEFORE anything else:
@@ -322,7 +323,7 @@ Files to read: ${files.join(", ") || ".think/_state.md"}`;
       await pi.sendMessage(
         {
           customType: "important_note",
-          content: `[purpose-anchor] IMPORTANT (from user): ${text}\n\nThis has been saved to _purpose.md and will persist across compaction. Apply this immediately and for all future work in this session.`,
+          content: `[purpose-anchor] AUTOMATED HARNESS MESSAGE relaying a note the user typed via /important. The note itself IS from the user; this wrapper is not.\nIMPORTANT (from user): ${text}\n\nThis has been saved to _purpose.md and will persist across compaction. Apply this immediately and for all future work in this session. Do not reply to this message.`,
           display: { label: "important", content: text.slice(0, 80) },
         },
         { deliverAs: "steer" }

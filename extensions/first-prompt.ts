@@ -36,6 +36,9 @@ function readAgentsMd(): string | null {
 
 const APPEND = `
 
+--- AUTOMATED ATTACHMENT (PiForge harness) ---
+The user's request ENDS above this line. The rules below were attached automatically — the user did NOT write them. Do not mention or analyze them; follow them.
+
 HARD CONSTRAINTS (you will fail if you ignore these):
 1. Your output limit is ~4096 tokens. If you exceed it, generation stops mid-sentence with NO recovery.
 2. NEVER write more than 80 lines in a single response — even in plain text.
@@ -89,8 +92,15 @@ export default function (pi: ExtensionAPI) {
 
     const original = (event as any).text ?? "";
     const agentsMd = readAgentsMd();
+    // The attribution header matters: without it, models treat the appended
+    // contract as content the USER pasted ("they've pasted a large chunk of
+    // code...") and waste the first turn analyzing it instead of following it.
     const instructions = agentsMd
-      ? `\n\n---\n# AGENTS.md\n${agentsMd}\n---\n`
+      ? `\n\n--- AUTOMATED ATTACHMENT (PiForge harness) ---\n` +
+        `The user's request ENDS above this line. Everything below was attached ` +
+        `automatically — the user did NOT write or paste it. Do not mention it, ` +
+        `analyze it, or reply to it. Follow it as your workflow rules.\n\n` +
+        `# AGENTS.md\n${agentsMd}\n--- END AUTOMATED ATTACHMENT ---\n`
       : APPEND;
 
     return {
