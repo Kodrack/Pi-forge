@@ -87,7 +87,8 @@ function taskMarkedComplete(cwd: string): boolean {
   }
 }
 
-const STALE_MESSAGE = `[state-guard] You haven't updated .think/_state.md in the last ${STALE_TURN_THRESHOLD} turns.
+const STALE_MESSAGE = `[state-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.
+You haven't updated .think/_state.md in the last ${STALE_TURN_THRESHOLD} turns.
 Your progress will be lost if context compacts.
 
 ACTION REQUIRED — update .think/_state.md NOW with this format:
@@ -105,7 +106,8 @@ ACTION REQUIRED — update .think/_state.md NOW with this format:
 
 Keep it concise but complete. This is your recovery point after compaction.`;
 
-const READ_FIRST_MESSAGE = `[state-guard] Read .think/_state.md FIRST before doing anything else.
+const READ_FIRST_MESSAGE = `[state-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+Read .think/_state.md FIRST before doing anything else.
 If it doesn't exist, create it with this format:
 
 ## Task: [describe what the user asked]
@@ -252,7 +254,8 @@ export default function (pi: ExtensionAPI) {
       await pi.sendMessage(
         {
           customType: "state_guard_create",
-          content: `[state-guard] No .think/_state.md found. Create one NOW before reading source files.
+          content: `[state-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+No .think/_state.md found. Create one NOW before reading source files.
 
 Write this to .think/_state.md:
 ## Task: [describe what the user asked]

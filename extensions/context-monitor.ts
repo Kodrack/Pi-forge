@@ -55,7 +55,8 @@ const COMPACT_INSTRUCTIONS =
 
 // Condensed AGENTS.md — the load-bearing rules only. Injected after compactions
 // where the full AGENTS.md is skipped.
-const AGENTS_DIGEST = `[context-monitor] Context was compacted. Core workflow rules (condensed):
+const AGENTS_DIGEST = `[context-monitor] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.
+Context was compacted. Core workflow rules (condensed):
 1. Read .think/_state.md FIRST, before anything else.
 2. Do ONE thing per turn, then update .think/_state.md and STOP.
 3. Write EVERY finding, decision, and error to a .think/step-NNN.md file BEFORE responding — anything not on disk is destroyed at the next compaction.
@@ -65,7 +66,8 @@ const AGENTS_DIGEST = `[context-monitor] Context was compacted. Core workflow ru
 Full rules are in ~/.pi/agent/AGENTS.md on disk — re-read it if unsure.`;
 
 // ---------- STEERING MESSAGES ----------
-const WARN_MESSAGE = `[context-monitor] Context is at {PERCENT}% full.
+const WARN_MESSAGE = `[context-monitor] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+Context is at {PERCENT}% full.
 Write your current progress to disk so compaction can safely compress earlier turns.
 
 ACTION REQUIRED before your next response:
@@ -172,7 +174,8 @@ export default function (pi: ExtensionAPI) {
     // OURS (contract): full every FULL_AGENTS_EVERY-th compaction, digest otherwise.
     const useFull = contractMd && (compactionCount - 1) % FULL_AGENTS_EVERY === 0;
     const rulesPart = useFull
-      ? `[context-monitor] Context was compacted. Re-injecting AGENTS.md rules:\n\n---\n${contractMd}\n---`
+      ? `[context-monitor] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.\n` +
+        `Context was compacted. Re-injecting AGENTS.md rules:\n\n---\n${contractMd}\n---`
       : AGENTS_DIGEST;
     // THEIRS (project AGENTS.md): always appended IN FULL, every reinjection.
     const projectPart = extraMd

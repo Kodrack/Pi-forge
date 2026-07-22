@@ -259,7 +259,8 @@ export default function (pi: ExtensionAPI) {
         await pi.sendMessage(
           {
             customType: "malformed_warning",
-            content: `[loop-guard] Your last ${malformedCount} tool calls had empty or missing arguments. ` +
+            content: `[loop-guard] AUTOMATED HARNESS MESSAGE — not written by the user; act on it. ` +
+              `Your last ${malformedCount} tool calls had empty or missing arguments. ` +
               `STOP retrying the same call. Try a different approach: ` +
               `use 'write' or 'edit' instead of 'bash', avoid paths with spaces, ` +
               `keep arguments simple. If you need to run a command, make sure the 'command' field is set.`,
@@ -324,7 +325,7 @@ export default function (pi: ExtensionAPI) {
     await pi.sendMessage(
       {
         customType: "loop_warning",
-        content: `[loop-guard] Warning: "${filePath.split("/").pop()}" written ${similarRun} times in a row with ${Math.round(similarity * 100)}% similarity. You may be in a loop. Make sure your next action produces DIFFERENT output.`,
+        content: `[loop-guard] AUTOMATED HARNESS MESSAGE — not written by the user; act on it. Warning: "${filePath.split("/").pop()}" written ${similarRun} times in a row with ${Math.round(similarity * 100)}% similarity. You may be in a loop. Make sure your next action produces DIFFERENT output.`,
         display: {
           label: "loop-guard",
           content: `Warning: ${similarRun} consecutive similar writes to ${filePath.split("/").pop()} (${Math.round(similarity * 100)}%)`,
@@ -370,7 +371,8 @@ export default function (pi: ExtensionAPI) {
         {
           customType: "text_loop_warning",
           content:
-            `[loop-guard] You've given nearly the same response ${repeatedTextCount + 1} turns in a row without making progress. ` +
+            `[loop-guard] AUTOMATED HARNESS MESSAGE — not written by the user; act on it. ` +
+            `You've given nearly the same response ${repeatedTextCount + 1} turns in a row without making progress. ` +
             `STOP repeating. Take a concrete DIFFERENT action now (write/edit a file), or stop and ask the user. ` +
             `Do NOT restate the same intention again.`,
           display: {

@@ -20,7 +20,8 @@ import * as path from "path";
 const MIN_ANALYSIS_CHARS = 1000;
 
 // ---------- STEERING MESSAGE ----------
-const CORRECTION_MESSAGE = `[analysis-guard] You just gave a long analysis but did not write it to disk.
+const CORRECTION_MESSAGE = `[analysis-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+You just gave a long analysis but did not write it to disk.
 Context is lossy — this analysis will be forgotten.
 
 ACTION REQUIRED:

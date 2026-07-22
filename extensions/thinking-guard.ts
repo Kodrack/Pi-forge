@@ -35,7 +35,8 @@ const HARD_ABORT_CHARS = 4000;
 
 // The correction message injected as a steering message after a long thinking block.
 // Mirrors the .think/ workflow from AGENTS.md so the model knows exactly what to do.
-const CORRECTION_MESSAGE = `[thinking-guard] Your thinking block was too long — you are overthinking.
+const CORRECTION_MESSAGE = `[thinking-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
+Your thinking block was too long — you are overthinking.
 STOP the current reasoning chain immediately.
 
 Rules:
@@ -72,7 +73,8 @@ export default function (pi: ExtensionAPI) {
       {
         customType: "output_guard_abort",
         content:
-          `[thinking-guard] Your ${channel} ran past ${chars} characters without finishing — you were looping/overthinking, ` +
+          `[thinking-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.\n` +
+          `Your ${channel} ran past ${chars} characters without finishing — you were looping/overthinking, ` +
           `so the generation was STOPPED.\n\n` +
           `Do NOT re-derive what you already wrote. Instead:\n` +
           `1. Pick ONE interpretation and commit to it.\n` +

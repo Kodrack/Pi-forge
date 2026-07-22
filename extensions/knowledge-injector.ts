@@ -460,7 +460,7 @@ export default function (pi: ExtensionAPI) {
       await pi.sendMessage(
         {
           customType: "knowledge_inject",
-          content: `[knowledge-injector] Relevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
+          content: `[knowledge-injector] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.\nRelevant failure patterns for this task:\n\n${content}\n\nApply these. Write .think/_knowledge.md acknowledgment before writing any code.`,
           display: { label: "knowledge-injector", content: `Loaded: ${active.join(", ")}` },
         },
         { deliverAs: "steer" }
@@ -486,7 +486,7 @@ export default function (pi: ExtensionAPI) {
     await pi.sendMessage(
       {
         customType: "knowledge_reinject",
-        content: `[knowledge-injector] Context was compacted. Re-injecting knowledge:\n\n${content}\n\nThis knowledge was selected at session start and is still active. Continue applying these patterns.`,
+        content: `[knowledge-injector] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.\nContext was compacted. Re-injecting knowledge:\n\n${content}\n\nThis knowledge was selected at session start and is still active. Continue applying these patterns.`,
         display: { label: "knowledge-injector", content: `Re-injected: ${loaded.join(", ")}` },
       },
       { deliverAs: "steer" }
