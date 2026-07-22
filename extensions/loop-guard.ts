@@ -3,11 +3,14 @@
 // Also detects malformed tool call loops (empty/invalid arguments).
 //
 // --- Write loop detection (Jaccard) ---
-// Tracks write/edit tool calls per file path. If the same file is written
-// with content similarity > 0.85 (Jaccard on word sets), escalates:
+// Tracks write/edit tool calls per file path. Each write is compared to the
+// IMMEDIATELY PREVIOUS write of the same file (consecutive similarity, NOT a
+// history average — averaging let legit earlier writes dilute the score so the
+// warn tier never fired and blocks came 2× late; proven by replay benchmark).
+// A run of consecutive writes with similarity > 0.85 escalates:
 //
-//   4 similar writes  → warning steer
-//   6 similar writes  → hard block + escape hint
+//   4 similar writes in a row → warning steer
+//   6 similar writes in a row → hard block + escape hint
 //   3 blocked attempts → abort + compact (clean context, _state.md survives)
 //   loops AGAIN after  → abort + double compact (nuclear — near-empty context)
 //   STILL loops        → notify user to /clear
@@ -24,10 +27,16 @@
 // Catches the model emitting the SAME response repeatedly without progress
 // (e.g. "My bad — I didn't apply anything, let me fix that" 4× while only
 // re-reading the same file). The write/malformed detectors miss this entirely
-// because reads are valid and nothing is written. Jaccard on assistant text:
+// because reads are valid and nothing is written. Jaccard on assistant output —
+// THINKING blocks included: on thinking models (Qwen3.x) the repeated narration
+// lives in the thinking channel and the text block is ~2 chars of whitespace on
+// tool-call turns (proven by turn_end probe), so text-only extraction sees
+// nothing and the detector never fires.
 //
 //   2 near-identical responses in a row → warning steer
-//   3 near-identical responses in a row → abort + compact (break the loop)
+//   4 near-identical responses in a row → abort + compact (break the loop)
+//   (recovery at the 4th, not 3rd — thinking text is noisier and compaction
+//    is disruptive, so demand one more repeat before pulling that lever)
 //
 // Zero inference cost — pure string math (Set intersection/union).
 // Works with any harness (LM Studio, Ollama, vLLM, llama.cpp).
@@ -54,9 +63,8 @@ function isEnabled(): boolean {
 }
 
 const SIMILARITY_THRESHOLD = 0.85;
-const WARN_COUNT = 4;
-const BLOCK_COUNT = 6;
-const MAX_HISTORY = 10;
+const WARN_COUNT = 4;   // 4 consecutive similar writes to the same file → warn
+const BLOCK_COUNT = 6;  // 6 consecutive similar writes → hard block
 
 // Malformed tool call thresholds
 const MALFORMED_WARN = 4;
@@ -65,16 +73,19 @@ const MALFORMED_COMPACT = 8;
 // Response-text loop thresholds
 const TEXT_SIMILARITY_THRESHOLD = 0.85;
 const TEXT_WARN = 1;      // counter 1 = 2nd near-identical response → warn
-const TEXT_RECOVER = 2;   // counter 2 = 3rd near-identical response → break it
+const TEXT_RECOVER = 3;   // counter 3 = 4th near-identical response → break it
 const MIN_TEXT_LEN = 60;  // ignore trivial/short responses
 
-interface WriteEntry {
-  words: Set<string>;
-  turn: number;
+// Per-file write tracking: last write's word set + how many consecutive writes
+// have been similar to their immediate predecessor. Comparing only against the
+// previous write (not a history average) is what makes the warn/block counts
+// mean what they say.
+interface FileTrack {
+  lastWords: Set<string>;
+  consecutiveSimilar: number; // N means the last N+1 writes were all mutually similar
 }
 
-const fileHistory: Map<string, WriteEntry[]> = new Map();
-let currentTurn = 0;
+const fileTracks: Map<string, FileTrack> = new Map();
 let interventionCount = 0;
 let compactCount = 0;
 let lastBlockedPath = "";
@@ -93,11 +104,14 @@ function tokenize(text: string): Set<string> {
   );
 }
 
+// Extract the model's output for loop comparison — thinking AND text blocks.
+// On thinking models the narration lives in `thinking`; the `text` block on
+// tool-call turns is often just whitespace, so text-only extraction is blind.
 function extractText(message: any): string {
   if (!message?.content) return "";
   return (message.content as any[])
-    .filter((b) => b?.type === "text")
-    .map((b) => b?.text ?? "")
+    .filter((b) => b?.type === "text" || b?.type === "thinking")
+    .map((b) => b?.text ?? b?.thinking ?? "")
     .join(" ")
     .trim();
 }
@@ -110,17 +124,6 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   }
   const union = a.size + b.size - intersection;
   return union === 0 ? 1 : intersection / union;
-}
-
-function avgSimilarity(history: WriteEntry[]): number {
-  if (history.length < 2) return 0;
-  const latest = history[history.length - 1];
-  let total = 0;
-  const comparisons = history.length - 1;
-  for (let i = 0; i < comparisons; i++) {
-    total += jaccard(latest.words, history[i].words);
-  }
-  return total / comparisons;
 }
 
 function getEscapeHint(filePath: string): string {
@@ -140,7 +143,7 @@ function isMalformed(toolName: string, input: Record<string, any>): boolean {
 }
 
 function resetState(): void {
-  fileHistory.clear();
+  fileTracks.clear();
   interventionCount = 0;
   lastBlockedPath = "";
   malformedCount = 0;
@@ -228,17 +231,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event: any, ctx: any) => {
     resetState();
     compactCount = 0;
-    currentTurn = 0;
     recovering = false;
     if (!isEnabled()) {
       ctx.ui.notify("loop-guard disabled (use /piforge enable loop-guard)", "info");
       return;
     }
     ctx.ui.notify("loop-guard active — detects repetition loops via Jaccard similarity", "info");
-  });
-
-  pi.on("turn_start", () => {
-    currentTurn++;
   });
 
   pi.on("tool_call", async (event: any, ctx: any) => {
@@ -292,19 +290,18 @@ export default function (pi: ExtensionAPI) {
     }
 
     const words = tokenize(content);
-    const history = fileHistory.get(filePath) ?? [];
-    history.push({ words, turn: currentTurn });
+    const track = fileTracks.get(filePath);
+    const similarity = track ? jaccard(words, track.lastWords) : 0;
+    const consecutiveSimilar =
+      track && similarity > SIMILARITY_THRESHOLD ? track.consecutiveSimilar + 1 : 0;
+    fileTracks.set(filePath, { lastWords: words, consecutiveSimilar });
 
-    while (history.length > MAX_HISTORY) history.shift();
-    fileHistory.set(filePath, history);
-
-    if (history.length < WARN_COUNT) return;
-
-    const similarity = avgSimilarity(history);
-    if (similarity <= SIMILARITY_THRESHOLD) return;
+    // consecutiveSimilar = N means the last N+1 writes were all mutually similar.
+    const similarRun = consecutiveSimilar + 1;
+    if (similarRun < WARN_COUNT) return;
 
     // --- BLOCK ---
-    if (history.length >= BLOCK_COUNT) {
+    if (similarRun >= BLOCK_COUNT) {
       interventionCount++;
       lastBlockedPath = filePath;
 
@@ -319,7 +316,7 @@ export default function (pi: ExtensionAPI) {
 
       return {
         block: true,
-        reason: `[loop-guard] LOOP DETECTED — you've written "${filePath.split("/").pop()}" ${history.length} times with ${Math.round(similarity * 100)}% similarity. ${getEscapeHint(filePath)}`,
+        reason: `[loop-guard] LOOP DETECTED — you've written "${filePath.split("/").pop()}" ${similarRun} times in a row with ${Math.round(similarity * 100)}% similarity. ${getEscapeHint(filePath)}`,
       };
     }
 
@@ -327,10 +324,10 @@ export default function (pi: ExtensionAPI) {
     await pi.sendMessage(
       {
         customType: "loop_warning",
-        content: `[loop-guard] Warning: "${filePath.split("/").pop()}" written ${history.length} times with ${Math.round(similarity * 100)}% similarity. You may be in a loop. Make sure your next action produces DIFFERENT output.`,
+        content: `[loop-guard] Warning: "${filePath.split("/").pop()}" written ${similarRun} times in a row with ${Math.round(similarity * 100)}% similarity. You may be in a loop. Make sure your next action produces DIFFERENT output.`,
         display: {
           label: "loop-guard",
-          content: `Warning: ${history.length} similar writes to ${filePath.split("/").pop()} (${Math.round(similarity * 100)}%)`,
+          content: `Warning: ${similarRun} consecutive similar writes to ${filePath.split("/").pop()} (${Math.round(similarity * 100)}%)`,
         },
       },
       { deliverAs: "steer" }

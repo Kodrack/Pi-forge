@@ -77,8 +77,10 @@ export default function (pi: ExtensionAPI) {
     );
   });
 
-  // Track write/edit tool calls within the current turn.
-  pi.on("tool_call", async (event, _ctx) => {
+  // Track write/edit results within the current turn. tool_result only fires
+  // for calls that actually executed — a write BLOCKED by another guard emits
+  // no result, so it correctly doesn't count as "analysis was saved".
+  pi.on("tool_result", async (event, _ctx) => {
     const name = (event as any).toolName ?? "";
     if (name === "write" || name === "edit") {
       turnHadFileWrite = true;

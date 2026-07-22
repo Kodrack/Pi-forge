@@ -10,12 +10,12 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 ## What's in the box
 
-### 10 hard-enforcement extensions (guards)
+### 11 hard-enforcement extensions (guards)
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars — forces skeleton → small edit workflow | on |
-| `thinking-guard.ts` | Injects correction when thinking block > 2000 chars — stops reasoning spirals | on |
+| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow | on |
+| `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars (thinking AND response text channels); soft-steers next turn when a thinking block exceeded 15000 chars | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten | on |
@@ -23,6 +23,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
+| `response-guard.ts` | Backstop for verbose no-tool-call responses (>20000 chars). In practice superseded by thinking-guard's 4000-char mid-stream abort — only matters when thinking-guard is disabled (see header comments in the file) | on |
 | `web-search.ts` | Web search with sub-pi synthesis. Searches DuckDuckGo, fetches pages, synthesizes via isolated sub-pi — main context only sees final summary. `web_search()` tool + `/web-search` command | on |
 
 These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
@@ -166,17 +167,24 @@ Without proper inference settings (repeat penalty, temperature), Q2 models fall 
 
 **Jaccard similarity** measures the overlap between two sets of words. Given two text blocks, tokenize each into a set of lowercase words, then: `J = |intersection| / |union|`. A score of 1.0 = identical word sets, 0.0 = no words in common. This runs in microseconds with zero inference cost — pure `Set` math in JS.
 
-The guard tracks writes per file path in a sliding window of 10. Only repeated writes to the **same file** are flagged — writing similar but different files (e.g., `LeftArm.cs` / `RightArm.cs`) is normal progress.
+Each write is compared to the **immediately previous write of the same file** — a run of consecutive similar writes triggers the ladder. (It deliberately does NOT average against a write history: legitimate earlier updates dilute an average and let real loops run 2× longer before detection.) Only repeated writes to the **same file** are flagged — writing similar but different files (e.g., `LeftArm.cs` / `RightArm.cs`) is normal progress.
 
 **Write loop escalation:**
 
 | Trigger | Action |
 |---|---|
-| 4 similar writes (>85% Jaccard) | Warning steer |
-| 6 similar writes | Hard block + escape hint |
+| 4 consecutive similar writes (>85% Jaccard vs previous write) | Warning steer |
+| 6 consecutive similar writes | Hard block + escape hint |
 | 3 blocked attempts | Abort → compact (ignore loop turns) → restart from `_state.md` |
 | Loops again | Abort → double compact (crush context to one sentence) → restart |
 | Still loops | Notify user to `/clear` |
+
+**Response-text loop escalation** (same Jaccard math on the model's output — thinking blocks INCLUDED, since on thinking models the repeated narration lives in the thinking channel while the text block is near-empty on tool-call turns):
+
+| Trigger | Action |
+|---|---|
+| 2 near-identical responses in a row | Warning steer |
+| 4 near-identical responses in a row | Abort → compact (break the loop) |
 
 **Malformed tool call escalation:**
 
@@ -319,7 +327,7 @@ When the file would be large, ALWAYS use multiple bash append calls.
 DO NOT OVERTHINK. Short thinking is better than long thinking.
 ```
 
-> Note: the Pi `incremental-guard` extension enforces this at the API layer regardless — the system prompt is a soft nudge on top.
+> Note: the Pi `incremental-guard` extension enforces this at the API layer regardless — the system prompt is a soft nudge on top. Bash append chunks are ALSO capped per call (100 lines / 6000 chars): a whole file smuggled through one giant heredoc gets rejected the same way an oversized `write` does; multiple small `cat >>` chunks are the intended path.
 
 ### Inference parameters
 

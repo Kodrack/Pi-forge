@@ -89,6 +89,17 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Count only changes that actually EXECUTED. tool_result never fires for a
+  // call blocked by another guard, so rejected writes don't eat the budget.
+  pi.on("tool_result", async (event: any, _ctx: any) => {
+    const toolName = event.toolName ?? "";
+    if (toolName !== "write" && toolName !== "edit") return;
+    const input = (event.input as Record<string, any>) ?? {};
+    const filePath = input.path ?? input.file_path ?? "";
+    if (isThinkPath(filePath)) return;
+    changesThisTurn++;
+  });
+
   pi.on("tool_call", async (event: any, ctx: any) => {
     const toolName = event.toolName ?? "";
     if (toolName !== "write" && toolName !== "edit") return;
@@ -112,12 +123,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     // 2. Per-turn change ceiling — catch runaway editing before completion.
-    changesThisTurn++;
-    if (changesThisTurn > MAX_CHANGES_PER_TURN) {
+    if (changesThisTurn >= MAX_CHANGES_PER_TURN) {
       return {
         block: true,
         reason:
-          `BLOCKED: ${changesThisTurn - 1} source changes already this turn (limit ${MAX_CHANGES_PER_TURN}). ` +
+          `BLOCKED: ${changesThisTurn} source changes already this turn (limit ${MAX_CHANGES_PER_TURN}). ` +
           `Stop here. Update .think/_state.md with what you've done, the current Status, and the exact Next Action, ` +
           `then end your turn so the user can review. Do not keep going in one turn.`,
       };

@@ -1,7 +1,9 @@
 // incremental-guard.ts
 // Hard-enforces the "small calls" workflow on local LLMs.
-// Rejects oversized `write` and `edit` tool calls, forcing the model to
-// replan and split the work into multiple smaller calls.
+// Rejects oversized `write`, `edit`, and `bash` tool calls, forcing the model
+// to replan and split the work into multiple smaller calls. The bash cap closes
+// the heredoc side door (cat > file <<EOF with a whole file inline) while
+// leaving the chunked-append workflow (small cat >> calls) untouched.
 //
 // Soft layer (the incremental-codegen skill + AGENTS.md) tells the model HOW
 // to split. This extension makes ignoring those rules impossible — when the
@@ -16,6 +18,8 @@ const MAX_LINES_PER_WRITE = 100;      // skeleton scaffold cap
 const MAX_LINES_PER_EDIT  = 60;       // single-feature edit cap
 const MAX_CHARS_PER_WRITE = 6000;     // ~1500 tokens for new files
 const MAX_CHARS_PER_EDIT  = 3000;     // ~750 tokens — forces small targeted edits
+const MAX_LINES_PER_BASH  = 100;      // bash heredoc/append chunk cap (mirrors write)
+const MAX_CHARS_PER_BASH  = 6000;     // a >6000-char bash command is always an inline file write
 
 // Files exempt from the cap (config files, lockfiles, etc. that legitimately
 // need to be written wholesale). Add more globs here if needed.
@@ -45,12 +49,40 @@ function charCount(s?: string): number {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(
-      `incremental-guard active (write: ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, edit: ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars)`,
+      `incremental-guard active (write: ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, edit: ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars, bash: ${MAX_LINES_PER_BASH} lines/${MAX_CHARS_PER_BASH} chars)`,
       "info"
     );
   });
 
   pi.on("tool_call", async (event, _ctx) => {
+    // ---------- BASH ----------
+    // Block oversized bash commands. A command past these caps is effectively
+    // always an inline file write (heredoc / >> redirect) smuggling a whole
+    // file around the write/edit caps — proven by benchmark: 150-line heredocs
+    // sailed through 5/5 before this branch existed. Small appends stay allowed;
+    // the LM Studio system prompt teaches that exact chunked-append workflow.
+    if (event.toolName === "bash") {
+      const input = event.input as { command?: string };
+      const command = input.command ?? "";
+      const lines = lineCount(command);
+      const chars = charCount(command);
+
+      if (lines > MAX_LINES_PER_BASH || chars > MAX_CHARS_PER_BASH) {
+        return {
+          block: true,
+          reason:
+            `bash rejected: command is ${lines} lines / ${chars} chars ` +
+            `(limit ${MAX_LINES_PER_BASH} lines / ${MAX_CHARS_PER_BASH} chars). ` +
+            `You are writing a whole file inline — that defeats the incremental workflow. ` +
+            `Do NOT retry with the same payload. Instead split the content into MULTIPLE ` +
+            `bash calls, each appending one chunk under the limit: ` +
+            `cat >> <file> << 'CHUNK' ... CHUNK. ` +
+            `One section per call. For new files, prefer the 'write' tool for a small ` +
+            `skeleton first, then append/edit in small pieces.`,
+        };
+      }
+    }
+
     // ---------- WRITE ----------
     // Block any `write` call whose `content` exceeds limits.
     // `write` is for new files only — we let the model use it for skeletons,
@@ -135,7 +167,8 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       ctx.ui.notify(
         `incremental-guard: write ≤ ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, ` +
-          `edit ≤ ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars. ` +
+          `edit ≤ ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars, ` +
+          `bash ≤ ${MAX_LINES_PER_BASH} lines/${MAX_CHARS_PER_BASH} chars. ` +
           `Edit ~/.pi/agent/extensions/incremental-guard.ts to change.`,
         "info"
       );

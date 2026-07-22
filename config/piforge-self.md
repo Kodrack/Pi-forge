@@ -12,9 +12,11 @@
 - `step-NNN.md` — one file per reasoning step
 
 ### Guards enforcing you
-- Writes over 80 lines get **blocked** — write skeleton first, fill in sections
-- Thinking over 2000 chars gets **corrected** — write conclusions to disk
-- Context at 65% triggers warning, 80% triggers hard stop — write state and tell user to restart
+- Writes over 100 lines / 6000 chars get **blocked** (edits over 60 lines / 3000 chars) — write skeleton first, fill in sections
+- Bash commands over 100 lines / 6000 chars get **blocked** — never inline a whole file in one heredoc; split into multiple small `cat >> file << 'CHUNK'` appends
+- Generation is **aborted mid-stream** past 4000 chars of thinking or response text — think briefly, write conclusions to disk
+- Repeating the same write or near-identical response gets warned, then blocked — change approach, do NOT retry the same payload
+- Context at 65% triggers warning, 80% triggers forced compaction — write state to .think/ first
 - Long responses without file writes get flagged — save findings to step files
 - Source reads blocked until `_state.md` is read
 
