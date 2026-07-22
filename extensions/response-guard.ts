@@ -2,6 +2,14 @@
 // Detects verbose responses (reasoning dumps) and injects correction.
 // Catches LLMs that ignore "keep it short" rules and dump their thinking as regular output.
 //
+// KNOWN LIMITATIONS (verified by live probe, 2026-07-22 — kept as-is by user decision):
+// 1. The tool-call exemption below checks `b.type === "tool_use"` (Anthropic API
+//    naming). Pi's assistant message blocks use `type: "toolCall"`, so the check
+//    never matches — every turn is treated as having no tool calls.
+// 2. thinking-guard hard-aborts ANY text stream at 4000 chars, so the 20000-char
+//    threshold here is unreachable while thinking-guard is enabled. This guard
+//    only matters as a backstop in sessions where thinking-guard is disabled.
+//
 // Install: copy to ~/.pi/agent/extensions/response-guard.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -65,7 +73,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", async (event, ctx) => {
     const msg = event.message as any;
 
-    // Check if there were any tool calls — if so, verbose text is acceptable
+    // Check if there were any tool calls — if so, verbose text is acceptable.
+    // NOTE: "tool_use" never matches — Pi uses type "toolCall" (see header note).
     const hasToolCalls = msg?.content?.some((b: any) => b.type === "tool_use");
     if (hasToolCalls) {
       responseChars = 0;
