@@ -12,6 +12,8 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import * as fs from "fs";
+import * as nodePath from "path";
 
 // ---------- LIMITS (tune these as needed) ----------
 const MAX_LINES_PER_WRITE = 100;      // skeleton scaffold cap
@@ -45,8 +47,19 @@ function charCount(s?: string): number {
   return s?.length ?? 0;
 }
 
+// When a "recovery" write/edit leaves the file at less than this fraction of
+// the blocked attempt's size, steer: the file is probably truncated.
+const TRUNCATION_WARN_FRACTION = 0.5;
+// Consider the original goal reached at this fraction (stop tracking the path).
+const TRUNCATION_DONE_FRACTION = 0.8;
+
 // ---------- EXTENSION ENTRY POINT ----------
 export default function (pi: ExtensionAPI) {
+  // path → line count of the biggest oversized write we blocked for it.
+  const blockedAttemptLines = new Map<string, number>();
+  // paths already warned about (one steer per path per session).
+  const truncationWarned = new Set<string>();
+
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(
       `incremental-guard active (write: ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, edit: ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars, bash: ${MAX_LINES_PER_BASH} lines/${MAX_CHARS_PER_BASH} chars)`,
@@ -98,16 +111,22 @@ export default function (pi: ExtensionAPI) {
       const chars = charCount(content);
 
       if (lines > MAX_LINES_PER_WRITE || chars > MAX_CHARS_PER_WRITE) {
+        // Remember the attempted size so we can warn if the "recovery" write
+        // leaves the file at a fraction of what the model meant to produce.
+        if (path) blockedAttemptLines.set(path, Math.max(lines, blockedAttemptLines.get(path) ?? 0));
         return {
           block: true,
           reason:
             `write rejected: ${lines} lines / ${chars} chars exceeds limit ` +
             `(${MAX_LINES_PER_WRITE} lines / ${MAX_CHARS_PER_WRITE} chars). ` +
-            `Do NOT retry with the same payload. Instead: ` +
-            `(1) write a SHORT plan to _plan.md listing each feature as a numbered TODO, ` +
-            `(2) write a SKELETON file with empty <!-- TODO: name --> markers (under ${MAX_LINES_PER_WRITE} lines), ` +
-            `(3) implement ONE TODO per turn using the 'edit' tool. ` +
-            `Stop after each step and wait for the user.`,
+            `Your ${lines}-line file is NOT lost — you still know what goes in it. Rebuild it in chunks: ` +
+            `(1) list every section of those ${lines} lines as a numbered checklist in .think/_plan.md, ` +
+            `(2) 'write' ONLY the first chunk (under ${MAX_LINES_PER_WRITE} lines), ` +
+            `(3) append each remaining chunk with a SEPARATE small bash call: cat >> <file> << 'CHUNK' ... CHUNK, ` +
+            `(4) check off each chunk in _plan.md as you append it. ` +
+            `The file is NOT DONE until every chunk from your checklist is in it — a fragment that ` +
+            `references functions you never appended is a broken file, not a finished one. ` +
+            `Do NOT retry the full payload in one call, and NEVER dump the remaining code into chat.`,
         };
       }
     }
@@ -159,6 +178,66 @@ export default function (pi: ExtensionAPI) {
         };
       }
     }
+  });
+
+  // Truncated-recovery watchdog. Benchmark-observed failure: a blocked
+  // 206/265-line write gets "recovered" as a 29/53-line fragment (write
+  // OVERWRITES), the rest never appended, and the model moves on with a file
+  // that references functions that don't exist. When a write/edit to a
+  // previously-blocked path executes and the on-disk file is still far smaller
+  // than the blocked attempt, steer ONCE: the file is probably incomplete.
+  pi.on("tool_result", async (event: any, ctx: any) => {
+    const toolName = event.toolName ?? "";
+    if (toolName !== "write" && toolName !== "edit" && toolName !== "bash") return;
+    if (blockedAttemptLines.size === 0) return;
+
+    const input = (event.input as Record<string, any>) ?? {};
+    let filePath: string | undefined = input.path ?? input.file_path;
+    if (toolName === "bash") {
+      // Follow appends into tracked files (cat >> file << 'EOF').
+      const m = String(input.command ?? "").match(/>>?\s*([^\s;|&]+)/);
+      filePath = m?.[1];
+    }
+    if (!filePath || !blockedAttemptLines.has(filePath) || truncationWarned.has(filePath)) return;
+
+    const attempted = blockedAttemptLines.get(filePath)!;
+    let actual = 0;
+    try {
+      const abs = nodePath.isAbsolute(filePath) ? filePath : nodePath.join(ctx.cwd, filePath);
+      actual = fs.readFileSync(abs, "utf-8").split(/\r?\n/).length;
+    } catch {
+      return; // file not readable yet — nothing to judge
+    }
+
+    if (actual >= attempted * TRUNCATION_DONE_FRACTION) {
+      blockedAttemptLines.delete(filePath); // goal effectively reached
+      return;
+    }
+    if (actual >= attempted * TRUNCATION_WARN_FRACTION) return; // in progress — keep watching
+
+    truncationWarned.add(filePath);
+    ctx.ui.notify(
+      `incremental-guard: ${filePath} has ${actual} lines but the blocked attempt had ${attempted} — steering (likely truncated)`,
+      "warn"
+    );
+    await pi.sendMessage(
+      {
+        customType: "incremental_guard_truncation",
+        content:
+          `[incremental-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.\n` +
+          `${filePath} currently has ${actual} lines, but your blocked write attempted ${attempted} lines — ` +
+          `the file is likely INCOMPLETE (missing functions/sections you planned).\n` +
+          `1. Read the file and compare it against your plan/checklist in .think/_plan.md.\n` +
+          `2. Append every missing section in small chunks: cat >> ${filePath} << 'CHUNK' ... CHUNK (one section per call).\n` +
+          `3. Then execute the file to prove it loads (e.g. node ${filePath}).\n` +
+          `Do NOT declare the task complete with the file in this state.`,
+        display: {
+          label: "incremental-guard",
+          content: `${filePath}: ${actual}/${attempted} lines after blocked write — truncation warning`,
+        },
+      },
+      { deliverAs: "steer" }
+    );
   });
 
   // Optional: register a /guard command to inspect/disable at runtime.

@@ -3,6 +3,7 @@
     "plan-clarify",
     "explore",
     "distill-awareness",
-    "loop-guard"
+    "loop-guard",
+    "execution-guard"
   ]
 }
