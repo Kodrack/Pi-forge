@@ -10,12 +10,12 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 ## What's in the box
 
-### 11 hard-enforcement extensions (guards)
+### 13 hard-enforcement extensions (guards)
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow | on |
-| `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars (thinking AND response text channels); soft-steers next turn when a thinking block exceeded 15000 chars | on |
+| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
+| `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars per block AND 20000 chars cumulative per turn (thinking AND response text channels — the per-turn cap catches dumps split across many small blocks); soft-steers next turn when a thinking block exceeded 15000 chars | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten | on |
@@ -25,10 +25,12 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
 | `response-guard.ts` | Backstop for verbose no-tool-call responses (>20000 chars). In practice superseded by thinking-guard's 4000-char mid-stream abort — only matters when thinking-guard is disabled (see header comments in the file) | on |
 | `web-search.ts` | Web search with sub-pi synthesis. Searches DuckDuckGo, fetches pages, synthesizes via isolated sub-pi — main context only sees final summary. `web_search()` tool + `/web-search` command | on |
+| `execution-guard.ts` | Blocks `Status: complete` in `_state.md` while code files were modified but nothing was executed since — untested code cannot be declared done. Any execution releases the latch; gives up after 2 blocks. Built for unattended runs (`pi -p`, `/q` queues) | **off** |
+| `done-nudge.ts` | The mirror image: after 3 consecutive executions with zero source changes in between, steers once — "your checks pass and nothing is changing; mark `_state.md` complete and stop". Kills the perfect-solution-but-can't-conclude overrun | on |
 
-These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
+These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, `execution-guard`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
-`plan-clarify` and `loop-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
+`plan-clarify`, `loop-guard`, and `execution-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
 
 ### Codebase distillation — zoom levels for local models
 

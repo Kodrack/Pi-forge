@@ -23,6 +23,8 @@ const TOGGLEABLE = [
   { name: "state-guard",        description: "Blocks source reads until _state.md read; forces updates every 3 turns" },
   { name: "purpose-anchor",     description: "Captures session purpose, re-injects after compaction (idle when task complete)" },
   { name: "completion-guard",   description: "Blocks source edits after _state.md Status: complete; caps changes/turn" },
+  { name: "execution-guard",    description: "Blocks Status: complete while modified code was never executed (for unattended runs; off by default)" },
+  { name: "done-nudge",         description: "Suggests declaring completion after repeated executions with no source changes" },
   { name: "distill",            description: "/distill command + distill_codebase tool" },
   { name: "distill-query",      description: "/l1 /l2 /l3 direct level queries" },
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
