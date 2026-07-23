@@ -27,6 +27,7 @@ const TOGGLEABLE = [
   { name: "distill-query",      description: "/l1 /l2 /l3 direct level queries" },
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
   { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
+  { name: "voice-input",        description: "Push-to-talk voice input (è key), local STT via parakeet or moonshine" },
 ];
 
 function readConfig(): { disabled: string[] } {
