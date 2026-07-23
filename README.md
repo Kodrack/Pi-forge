@@ -121,6 +121,30 @@ Use it BEFORE implementing when:
 - Debugging error messages you don't recognize
 - Anything that might have changed since training
 
+### Voice input (push-to-talk, local STT)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `voice-input.ts` | `è` records the mic, `è` again stops → local speech-to-text → transcript lands in the input editor, Enter sends. Fully self-provisioning | on |
+
+Zero setup: on session start the extension provisions itself in the background — creates an isolated venv at `~/.pi/stt-venv` (container-like: self-contained, never touches system python, `rm -rf` to remove), pip-installs the engine into it, and pre-downloads the model by transcribing 1s of silence. The footer status live-reports each step (`🎤 setting up parakeet: installing…` → `🎤 è · parakeet ready`); setup output goes to `~/.pi/stt-setup.log`. Nothing runs between transcriptions — the engine is spawned per use and exits in seconds (no daemon, zero idle RAM; models cached on disk in `~/.cache/huggingface`).
+
+Two selectable engines, both fully offline after the first model download:
+
+| Engine | Model | Best for |
+|---|---|---|
+| `parakeet` (default) | NVIDIA Parakeet TDT 0.6B v3 (MLX, ~600MB) | Best accuracy, Apple Silicon GPU |
+| `moonshine` | Moonshine base (~57MB ONNX) | Lightest, fastest, any CPU |
+
+```
+pi --stt moonshine     # pick engine via CLI flag
+/stt parakeet          # or switch mid-session (auto-installs the new engine too)
+```
+
+Why a venv and not Docker: Docker on macOS can't access the Apple Silicon GPU, so a containerized Parakeet (MLX/Metal) can't run at all — the venv gives the same isolation and automation with native GPU speed. Recording uses ffmpeg avfoundation (auto-installed via brew if missing); the terminal needs macOS microphone permission (prompted on first use). Tunables at top of file: `TRIGGER_KEY`, `DEFAULT_ENGINE`, `AUDIO_DEVICE`, `MAX_RECORD_MS`.
+
+The trigger is the bare `è` key (intercepted via a custom editor component — Pi's shortcut system is ASCII-only). Trade-off: you can't *type* è into the prompt anymore (pasting è still works, é is unaffected). Change `TRIGGER_KEY` to any other single character if that bites.
+
 ### Session isolation (per-tab `.think/`)
 
 | Extension | What it does | Default |
@@ -360,6 +384,18 @@ The existing local LLM tooling (Cline, Roo, etc.) is designed for cloud models a
 
 ---
 
+## Testing PiForge itself
+
+`bench/` is a dev-side harness (never installed) that verifies the guards do what they claim:
+
+```bash
+bash bench/run-replay.sh              # instant: replays recorded failure scenarios against guard logic
+bash bench/live/run-live.sh           # real pi + your local model: bypass trials + false-positive regression
+TRIALS=1 bash bench/live/run-live.sh  # quick smoke (~5 min)
+```
+
+It exists because a benchmark caught a real hole: a single bash heredoc bypassed `incremental-guard` 5/5 times (0/5 after the fix). Run it after editing any guard — see [bench/README.md](./bench/README.md).
+
 ## Full setup guide
 
 See [PI-SETUP.md](./PI-SETUP.md) for the complete reference — every config option, tuning guide, benchmark results, and troubleshooting section.
@@ -373,6 +409,9 @@ piforge/
 ├── README.md
 ├── install.sh                          ← run this first
 ├── PI-SETUP.md                         ← full reference guide
+├── bench/                              ← dev-side test harness (never installed)
+│   ├── run-replay.sh                   ← instant logic replays (no LLM)
+│   └── live/run-live.sh                ← real-pi bypass trials + regression
 ├── distill-v2-plan.md                  ← distill design document
 ├── distill-v2-implementation.md        ← distill implementation spec
 ├── extensions/

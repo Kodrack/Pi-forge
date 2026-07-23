@@ -1,0 +1,391 @@
+// voice-input.ts
+// Push-to-talk voice input for Pi. Press the TRIGGER_KEY (è) to start recording
+// the mic, press it again to stop — audio is transcribed LOCALLY (no cloud) and
+// the text is appended to the input editor. Press Enter to send, as usual.
+//
+// ZERO-SETUP: on session start the extension provisions itself in the
+// background — creates a private venv at ~/.pi/stt-venv, pip-installs the
+// selected engine into it, and pre-downloads the model (transcribes 1s of
+// silence) so the first real use is instant. Footer status live-reports each
+// step (🎤 setting up… → 🎤 è · parakeet ready). Setup output is logged to
+// ~/.pi/stt-setup.log. Nothing runs between transcriptions — the engine is
+// spawned per use and exits immediately (no daemon, no container, zero idle
+// RAM). Models are cached on disk in ~/.cache/huggingface.
+//
+// Two selectable STT engines, both fully offline after first model download:
+//   parakeet  — NVIDIA Parakeet TDT 0.6B v3 via parakeet-mlx (Apple Silicon).
+//               Best accuracy, 25 European languages, Apache 2.0. ~600MB model.
+//   moonshine — Useful Sensors Moonshine base (~57MB ONNX). Lightest + fastest.
+//
+// Engine selection (first match wins):
+//   1. CLI flag              pi --stt moonshine
+//   2. /stt command          /stt parakeet | /stt moonshine   (this session only)
+//   3. DEFAULT_ENGINE const below
+//
+// The trigger is a bare accented character, which pi-tui's registerShortcut
+// key matcher can't represent (ASCII-only KeyId) — so this extension wraps the
+// input editor via ctx.ui.setEditorComponent/CustomEditor and intercepts the
+// raw character in handleInput. Consequence: you can no longer TYPE è into the
+// prompt (paste still works, and é/shift is unaffected). Conflicts with any
+// other extension that also sets a custom editor component.
+//
+// Recording uses ffmpeg avfoundation (auto-installed via brew if missing).
+// The terminal app needs microphone permission — macOS prompts on first use.
+//
+// Install: copy to ~/.pi/agent/extensions/voice-input.ts
+
+import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import { spawn, execFile, type ChildProcess } from "child_process";
+
+const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
+
+const TRIGGER_KEY = "è";             // record / stop toggle (raw char, intercepted in the editor)
+// Kitty keyboard protocol may deliver the key as a CSI-u sequence instead of
+// the raw char: ESC [ <codepoint> u — accept press/repeat, ignore release (:3).
+const TRIGGER_CSI = new RegExp(`^\\x1b\\[${TRIGGER_KEY.codePointAt(0)}(;1(:[12])?)?u$`);
+function isTrigger(data: string): boolean {
+  return data === TRIGGER_KEY || TRIGGER_CSI.test(data);
+}
+
+const DEFAULT_ENGINE: Engine = "parakeet";
+const AUDIO_DEVICE = ":0";           // avfoundation ":<idx>" — :0 = default mic; list with: ffmpeg -f avfoundation -list_devices true -i ""
+const SAMPLE_RATE = 16000;           // both engines want 16kHz mono
+const MAX_RECORD_MS = 120000;        // auto-stop safety net
+const TRANSCRIBE_TIMEOUT = 300000;
+const INSTALL_TIMEOUT = 900000;      // venv + pip (mlx wheels are chunky)
+const WARMUP_TIMEOUT = 1800000;      // first model download from HuggingFace
+const PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3";
+const MOONSHINE_MODEL = "moonshine/base"; // or moonshine/tiny (26MB, faster, less accurate)
+
+type Engine = "parakeet" | "moonshine";
+
+const PKG: Record<Engine, string> = {
+  parakeet: "parakeet-mlx",
+  moonshine: "useful-moonshine-onnx",
+};
+
+// Self-contained toolchain — never touches the system python.
+const VENV_DIR = path.join(os.homedir(), ".pi", "stt-venv");
+const VENV_BIN = path.join(VENV_DIR, "bin");
+const SETUP_LOG = path.join(os.homedir(), ".pi", "stt-setup.log");
+
+const WAV_PATH = path.join(os.tmpdir(), `pi-voice-${process.pid}.wav`);
+
+function isEnabled(): boolean {
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    return !(config.disabled ?? []).includes("voice-input");
+  } catch {
+    return true;
+  }
+}
+
+// Pi may run with a slim PATH; check the usual install locations too.
+function resolveBin(name: string): string | undefined {
+  const dirs = [
+    VENV_BIN, // our venv wins
+    ...(process.env.PATH || "").split(":"),
+    path.join(os.homedir(), ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  for (const dir of dirs) {
+    if (dir && fs.existsSync(path.join(dir, name))) return path.join(dir, name);
+  }
+  return undefined;
+}
+
+function sttPython(): string {
+  const venvPy = path.join(VENV_BIN, "python");
+  if (fs.existsSync(venvPy)) return venvPy;
+  return resolveBin("python3") || "python3";
+}
+
+function logSetup(line: string): void {
+  try {
+    fs.appendFileSync(SETUP_LOG, `[${new Date().toISOString()}] ${line}\n`);
+  } catch {}
+}
+
+function run(bin: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout, maxBuffer: 20 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`${err.message}\n${stderr.slice(-500)}`));
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function transcribeParakeet(wav: string): Promise<string> {
+  const bin = resolveBin("parakeet-mlx");
+  if (!bin) throw new Error("parakeet-mlx missing — setup should have installed it, see " + SETUP_LOG);
+  const outDir = os.tmpdir();
+  await run(bin, [wav, "--model", PARAKEET_MODEL, "--output-format", "txt", "--output-dir", outDir], TRANSCRIBE_TIMEOUT);
+  const txtPath = path.join(outDir, path.basename(wav, ".wav") + ".txt");
+  const text = fs.readFileSync(txtPath, "utf-8").trim();
+  fs.unlinkSync(txtPath);
+  return text;
+}
+
+async function transcribeMoonshine(wav: string): Promise<string> {
+  const script =
+    "import sys\n" +
+    "import moonshine_onnx\n" +
+    `print(' '.join(moonshine_onnx.transcribe(sys.argv[1], '${MOONSHINE_MODEL}')).strip())\n`;
+  const { stdout } = await run(sttPython(), ["-c", script, wav], TRANSCRIBE_TIMEOUT);
+  return stdout.trim();
+}
+
+async function transcribe(engine: Engine, wav: string): Promise<string> {
+  return engine === "parakeet" ? transcribeParakeet(wav) : transcribeMoonshine(wav);
+}
+
+async function engineReady(engine: Engine): Promise<boolean> {
+  if (engine === "parakeet") return !!resolveBin("parakeet-mlx");
+  try {
+    await run(sttPython(), ["-c", "import moonshine_onnx"], 20000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export default function voiceInput(pi: ExtensionAPI) {
+  let engineOverride: Engine | undefined; // set by /stt, session-only
+  let rec: Recording | undefined;
+  let busy = false; // transcription in flight
+  let idleStatus = ""; // footer text when not recording
+  const setups = new Map<Engine, Promise<boolean>>(); // serialized auto-setup per engine
+
+  pi.registerFlag("stt", { description: "Voice input STT engine: parakeet | moonshine", type: "string" });
+
+  function currentEngine(): Engine {
+    if (engineOverride) return engineOverride;
+    const flag = pi.getFlag("stt");
+    if (flag === "parakeet" || flag === "moonshine") return flag;
+    return DEFAULT_ENGINE;
+  }
+
+  function status(ctx: ExtensionContext, text: string, idle = true): void {
+    if (idle) idleStatus = text;
+    ctx.ui.setStatus("voice-input", text);
+  }
+
+  // ── Background auto-setup: venv → pip install → model pre-download ──
+  // Fire-and-forget from session_start; awaited (already-resolved) in toggle().
+  // On failure the cached promise is dropped so the next use retries.
+  function ensureEngine(ctx: ExtensionContext, engine: Engine): Promise<boolean> {
+    let p = setups.get(engine);
+    if (!p) {
+      p = doSetup(ctx, engine);
+      setups.set(engine, p);
+      p.then((ok) => {
+        if (!ok) setups.delete(engine);
+      });
+    }
+    return p;
+  }
+
+  async function doSetup(ctx: ExtensionContext, engine: Engine): Promise<boolean> {
+    try {
+      // 1. ffmpeg (recording + parakeet CLI decoding)
+      if (!resolveBin("ffmpeg")) {
+        const brew = resolveBin("brew");
+        if (!brew) {
+          status(ctx, "🎤 ffmpeg missing and no homebrew found — cannot auto-install");
+          return false;
+        }
+        status(ctx, "🎤 setting up: installing ffmpeg (brew)…");
+        logSetup("brew install ffmpeg");
+        await run(brew, ["install", "ffmpeg"], INSTALL_TIMEOUT);
+      }
+
+      // 2. engine package (skipped when already importable/on PATH)
+      if (!(await engineReady(engine))) {
+        const venvPy = path.join(VENV_BIN, "python");
+        if (!fs.existsSync(venvPy)) {
+          status(ctx, `🎤 setting up ${engine}: creating venv…`);
+          logSetup(`python3 -m venv ${VENV_DIR}`);
+          await run(resolveBin("python3") || "python3", ["-m", "venv", VENV_DIR], INSTALL_TIMEOUT);
+        }
+        status(ctx, `🎤 setting up ${engine}: installing ${PKG[engine]}…`);
+        logSetup(`pip install -U ${PKG[engine]}`);
+        const pipOut = await run(path.join(VENV_BIN, "pip"), ["install", "-U", PKG[engine]], INSTALL_TIMEOUT);
+        logSetup(pipOut.stdout.slice(-1000));
+      }
+
+      // 3. model pre-download: transcribe 1s of silence end-to-end. Validates
+      // the whole pipeline and pulls the model so first real use is instant.
+      status(ctx, `🎤 setting up ${engine}: downloading model (first time only)…`);
+      const warmWav = path.join(os.tmpdir(), `pi-voice-warm-${process.pid}.wav`);
+      const ffmpeg = resolveBin("ffmpeg")!;
+      await run(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `anullsrc=r=${SAMPLE_RATE}:cl=mono`, "-t", "1", "-y", warmWav], 30000);
+      logSetup(`warmup transcribe (${engine})`);
+      await runWarmup(engine, warmWav);
+      try { fs.unlinkSync(warmWav); } catch {}
+
+      status(ctx, `🎤 ${TRIGGER_KEY} · ${engine} ready`);
+      logSetup(`${engine} ready`);
+      return true;
+    } catch (err: any) {
+      logSetup(`SETUP FAILED (${engine}): ${err.message ?? err}`);
+      status(ctx, `🎤 ${engine} setup failed — see ${SETUP_LOG}`);
+      ctx.ui.notify(`voice-input: ${engine} auto-setup failed (${String(err.message ?? err).split("\n")[0]}) — details in ${SETUP_LOG}`, "error");
+      return false;
+    }
+  }
+
+  // Same as transcribe() but with the long first-download timeout.
+  async function runWarmup(engine: Engine, wav: string): Promise<void> {
+    if (engine === "parakeet") {
+      const bin = resolveBin("parakeet-mlx")!;
+      await run(bin, [wav, "--model", PARAKEET_MODEL, "--output-format", "txt", "--output-dir", os.tmpdir()], WARMUP_TIMEOUT);
+      try { fs.unlinkSync(path.join(os.tmpdir(), path.basename(wav, ".wav") + ".txt")); } catch {}
+    } else {
+      const script = `import sys, moonshine_onnx; moonshine_onnx.transcribe(sys.argv[1], '${MOONSHINE_MODEL}')`;
+      await run(sttPython(), ["-c", script, wav], WARMUP_TIMEOUT);
+    }
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    if (!isEnabled()) return;
+    if (ctx.ui.getEditorComponent()) {
+      ctx.ui.notify("voice-input: another extension already set a custom editor — è trigger disabled", "warning");
+      return;
+    }
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      const editor = new CustomEditor(tui, theme, keybindings);
+      const baseHandleInput = editor.handleInput.bind(editor);
+      editor.handleInput = (data: string) => {
+        if (isTrigger(data)) {
+          void toggle(ctx);
+          return; // swallow the char — it never reaches the text buffer
+        }
+        baseHandleInput(data);
+      };
+      return editor;
+    });
+    ctx.ui.notify(`voice-input active (${currentEngine()}, press ${TRIGGER_KEY} to record/stop, /stt to switch engine)`, "info");
+    void ensureEngine(ctx, currentEngine()); // background auto-setup, footer shows progress
+  });
+
+  pi.registerCommand("stt", {
+    description: "Show or switch the voice input engine: /stt [parakeet|moonshine]",
+    handler: async (args, ctx) => {
+      if (!isEnabled()) {
+        ctx.ui.notify("voice-input disabled (use /piforge enable voice-input)", "info");
+        return;
+      }
+      const arg = (args ?? "").trim();
+      if (arg === "parakeet" || arg === "moonshine") {
+        engineOverride = arg;
+        ctx.ui.notify(`voice input engine → ${arg} (this session)`, "info");
+        void ensureEngine(ctx, arg); // auto-setup the newly selected engine too
+      } else if (arg) {
+        ctx.ui.notify(`unknown engine "${arg}" — use: /stt parakeet | /stt moonshine`, "error");
+      } else {
+        ctx.ui.notify(`voice input engine: ${currentEngine()} (switch: /stt parakeet | /stt moonshine)`, "info");
+      }
+    },
+  });
+
+  async function toggle(ctx: ExtensionContext): Promise<void> {
+    if (!isEnabled()) return;
+    if (busy) {
+      ctx.ui.notify("voice-input: still transcribing previous recording…", "warning");
+      return;
+    }
+
+    // ── Second press: stop recording, transcribe, fill the editor ──
+    if (rec) {
+      const current = rec;
+      rec = undefined;
+      clearTimeout(current.timer);
+      current.stopped = true;
+      busy = true;
+      try {
+        // SIGINT lets ffmpeg finalize the WAV header cleanly (no-op if already exited).
+        current.proc.kill("SIGINT");
+        await current.done;
+        if (!fs.existsSync(WAV_PATH) || fs.statSync(WAV_PATH).size < 1000) {
+          throw new Error("no audio captured — check mic permission for your terminal (System Settings → Privacy → Microphone)");
+        }
+        const engine = currentEngine();
+        // Normally resolved long ago by session_start; first-ever use may wait
+        // here while the background setup finishes (footer shows its progress).
+        if (!(await ensureEngine(ctx, engine))) {
+          throw new Error(`${engine} is not available — auto-setup failed, see ${SETUP_LOG}`);
+        }
+        status(ctx, `⏳ transcribing (${engine})…`, false);
+        const text = await transcribe(engine, WAV_PATH);
+        if (!text) {
+          ctx.ui.notify("voice-input: transcription came back empty", "warning");
+        } else {
+          const existing = ctx.ui.getEditorText();
+          ctx.ui.setEditorText(existing ? `${existing.replace(/\s+$/, "")} ${text}` : text);
+        }
+      } catch (err: any) {
+        ctx.ui.notify(`voice-input: ${err.message ?? err}`, "error");
+      } finally {
+        busy = false;
+        ctx.ui.setStatus("voice-input", idleStatus || undefined);
+        try { fs.unlinkSync(WAV_PATH); } catch {}
+      }
+      return;
+    }
+
+    // ── First press: start recording ──
+    const ffmpeg = resolveBin("ffmpeg");
+    if (!ffmpeg) {
+      ctx.ui.notify("voice-input: ffmpeg not ready yet — auto-setup is running (see footer status)", "warning");
+      return;
+    }
+    try { fs.unlinkSync(WAV_PATH); } catch {}
+    const proc = spawn(ffmpeg, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "avfoundation", "-i", AUDIO_DEVICE,
+      "-ar", String(SAMPLE_RATE), "-ac", "1",
+      "-y", WAV_PATH,
+    ]);
+    let stderr = "";
+    proc.stderr?.on("data", (d) => (stderr += d));
+
+    const recording: Recording = {
+      proc,
+      stopped: false,
+      done: new Promise<void>((resolve) => {
+        proc.on("close", (code) => {
+          // Unsolicited exit (bad device, missing mic permission) — we did NOT
+          // stop it, so report and reset. SIGINT stops exit non-zero too, hence
+          // the stopped flag rather than the exit code.
+          if (!recording.stopped) {
+            rec = undefined;
+            clearTimeout(recording.timer);
+            ctx.ui.setStatus("voice-input", idleStatus || undefined);
+            ctx.ui.notify(`voice-input: recorder died (code ${code}): ${stderr.slice(-300) || "no output"}`, "error");
+          }
+          resolve();
+        });
+      }),
+      timer: setTimeout(() => {
+        if (rec === recording) {
+          recording.stopped = true;
+          proc.kill("SIGINT");
+          status(ctx, `■ auto-stopped after ${MAX_RECORD_MS / 1000}s — press ${TRIGGER_KEY} to transcribe`, false);
+        }
+      }, MAX_RECORD_MS),
+    };
+    rec = recording;
+    status(ctx, `● REC — press ${TRIGGER_KEY} to stop`, false);
+  }
+}
+
+interface Recording {
+  proc: ChildProcess;
+  done: Promise<void>;   // resolves when ffmpeg has exited (WAV finalized)
+  stopped: boolean;      // we asked it to stop (user press or auto-stop timer)
+  timer: ReturnType<typeof setTimeout>;
+}
