@@ -3,6 +3,13 @@
 // the mic, press it again to stop — audio is transcribed LOCALLY (no cloud) and
 // the text is appended to the input editor. Press Enter to send, as usual.
 //
+// STREAMING: recording is segmented into CHUNK_SECONDS-long WAV files (ffmpeg
+// segment muxer). A sequential queue transcribes each chunk as soon as it is
+// finalized — WHILE recording continues — and appends its text to the input
+// editor, so long dictation fills the prompt gradually. There is no practical
+// length limit beyond MAX_RECORD_MS. Tradeoff: chunks are cut at fixed times
+// (no VAD), so a word straddling a boundary can occasionally come out mangled.
+//
 // ZERO-SETUP: on session start the extension provisions itself in the
 // background — creates a private venv at ~/.pi/stt-venv, pip-installs the
 // selected engine into it, and pre-downloads the model (transcribes 1s of
@@ -53,7 +60,8 @@ function isTrigger(data: string): boolean {
 const DEFAULT_ENGINE: Engine = "parakeet";
 const AUDIO_DEVICE = ":0";           // avfoundation ":<idx>" — :0 = default mic; list with: ffmpeg -f avfoundation -list_devices true -i ""
 const SAMPLE_RATE = 16000;           // both engines want 16kHz mono
-const MAX_RECORD_MS = 120000;        // auto-stop safety net
+const CHUNK_SECONDS = 30;            // streaming segment length — each chunk is transcribed while recording continues
+const MAX_RECORD_MS = 600000;        // auto-stop safety net (10 min; streaming keeps up regardless of length)
 const TRANSCRIBE_TIMEOUT = 300000;
 const INSTALL_TIMEOUT = 900000;      // venv + pip (mlx wheels are chunky)
 const WARMUP_TIMEOUT = 1800000;      // first model download from HuggingFace
@@ -72,7 +80,12 @@ const VENV_DIR = path.join(os.homedir(), ".pi", "stt-venv");
 const VENV_BIN = path.join(VENV_DIR, "bin");
 const SETUP_LOG = path.join(os.homedir(), ".pi", "stt-setup.log");
 
-const WAV_PATH = path.join(os.tmpdir(), `pi-voice-${process.pid}.wav`);
+// Per-process chunk directory — each Pi tab records into its own set of
+// seg-NNN.wav files; segment i is finalized once seg i+1 exists (or ffmpeg exited).
+const SEG_DIR = path.join(os.tmpdir(), `pi-voice-${process.pid}`);
+const segPath = (i: number) => path.join(SEG_DIR, `seg-${String(i).padStart(3, "0")}.wav`);
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function isEnabled(): boolean {
   try {
@@ -299,7 +312,9 @@ export default function voiceInput(pi: ExtensionAPI) {
       return;
     }
 
-    // ── Second press: stop recording, transcribe, fill the editor ──
+    // ── Second press: stop recording, drain the remaining chunks ──
+    // Chunks recorded so far were already transcribed and appended by the pump
+    // while recording — only the tail (current partial segment) is left here.
     if (rec) {
       const current = rec;
       rec = undefined;
@@ -307,48 +322,42 @@ export default function voiceInput(pi: ExtensionAPI) {
       current.stopped = true;
       busy = true;
       try {
-        // SIGINT lets ffmpeg finalize the WAV header cleanly (no-op if already exited).
+        // SIGINT lets ffmpeg finalize the last segment cleanly (no-op if already exited).
         current.proc.kill("SIGINT");
         await current.done;
-        if (!fs.existsSync(WAV_PATH) || fs.statSync(WAV_PATH).size < 1000) {
+        status(ctx, "⏳ transcribing…", false);
+        const drained = (await current.pump) ?? { audioSegs: 0, textChunks: 0 };
+        if (drained.audioSegs === 0) {
           throw new Error("no audio captured — check mic permission for your terminal (System Settings → Privacy → Microphone)");
         }
-        const engine = currentEngine();
-        // Normally resolved long ago by session_start; first-ever use may wait
-        // here while the background setup finishes (footer shows its progress).
-        if (!(await ensureEngine(ctx, engine))) {
-          throw new Error(`${engine} is not available — auto-setup failed, see ${SETUP_LOG}`);
-        }
-        status(ctx, `⏳ transcribing (${engine})…`, false);
-        const text = await transcribe(engine, WAV_PATH);
-        if (!text) {
+        if (drained.textChunks === 0) {
           ctx.ui.notify("voice-input: transcription came back empty", "warning");
-        } else {
-          const existing = ctx.ui.getEditorText();
-          ctx.ui.setEditorText(existing ? `${existing.replace(/\s+$/, "")} ${text}` : text);
         }
       } catch (err: any) {
         ctx.ui.notify(`voice-input: ${err.message ?? err}`, "error");
       } finally {
         busy = false;
         ctx.ui.setStatus("voice-input", idleStatus || undefined);
-        try { fs.unlinkSync(WAV_PATH); } catch {}
+        try { fs.rmSync(SEG_DIR, { recursive: true, force: true }); } catch {}
       }
       return;
     }
 
-    // ── First press: start recording ──
+    // ── First press: start recording (segmented for streaming transcription) ──
     const ffmpeg = resolveBin("ffmpeg");
     if (!ffmpeg) {
       ctx.ui.notify("voice-input: ffmpeg not ready yet — auto-setup is running (see footer status)", "warning");
       return;
     }
-    try { fs.unlinkSync(WAV_PATH); } catch {}
+    try { fs.rmSync(SEG_DIR, { recursive: true, force: true }); } catch {}
+    fs.mkdirSync(SEG_DIR, { recursive: true });
     const proc = spawn(ffmpeg, [
       "-hide_banner", "-loglevel", "error",
       "-f", "avfoundation", "-i", AUDIO_DEVICE,
       "-ar", String(SAMPLE_RATE), "-ac", "1",
-      "-y", WAV_PATH,
+      "-f", "segment", "-segment_time", String(CHUNK_SECONDS),
+      "-segment_format", "wav", "-reset_timestamps", "1",
+      "-y", path.join(SEG_DIR, "seg-%03d.wav"),
     ]);
     let stderr = "";
     proc.stderr?.on("data", (d) => (stderr += d));
@@ -356,8 +365,10 @@ export default function voiceInput(pi: ExtensionAPI) {
     const recording: Recording = {
       proc,
       stopped: false,
+      ended: false,
       done: new Promise<void>((resolve) => {
         proc.on("close", (code) => {
+          recording.ended = true; // lets the pump finalize the last segment
           // Unsolicited exit (bad device, missing mic permission) — we did NOT
           // stop it, so report and reset. SIGINT stops exit non-zero too, hence
           // the stopped flag rather than the exit code.
@@ -374,18 +385,76 @@ export default function voiceInput(pi: ExtensionAPI) {
         if (rec === recording) {
           recording.stopped = true;
           proc.kill("SIGINT");
-          status(ctx, `■ auto-stopped after ${MAX_RECORD_MS / 1000}s — press ${TRIGGER_KEY} to transcribe`, false);
+          status(ctx, `■ auto-stopped after ${MAX_RECORD_MS / 1000}s — press ${TRIGGER_KEY} to finish`, false);
         }
       }, MAX_RECORD_MS),
     };
     rec = recording;
+    recording.pump = drainSegments(recording, ctx);
     status(ctx, `● REC — press ${TRIGGER_KEY} to stop`, false);
+  }
+
+  // ── Streaming pump: sequential transcription queue over finished segments ──
+  // Runs for the whole life of a recording. Segment i is safe to read once
+  // seg i+1 exists (ffmpeg moved on) or ffmpeg exited. Each transcript is
+  // appended to the editor immediately, so the prompt fills while recording.
+  // Segments run strictly one at a time — no parallel engine spawns.
+  async function drainSegments(recording: Recording, ctx: ExtensionContext): Promise<PumpResult> {
+    const result: PumpResult = { audioSegs: 0, textChunks: 0 };
+    let i = 0;
+    while (true) {
+      const cur = segPath(i);
+      const curExists = fs.existsSync(cur);
+      if (curExists && (fs.existsSync(segPath(i + 1)) || recording.ended)) {
+        try {
+          // < 1000 bytes = WAV header only (e.g. instant stop) — skip silently.
+          if (fs.statSync(cur).size >= 1000) {
+            result.audioSegs++;
+            const engine = currentEngine();
+            // Normally resolved long ago by session_start; first-ever use may
+            // wait here while background setup finishes (footer shows progress).
+            if (!(await ensureEngine(ctx, engine))) {
+              throw new Error(`${engine} is not available — auto-setup failed, see ${SETUP_LOG}`);
+            }
+            const text = await transcribe(engine, cur);
+            if (text) {
+              result.textChunks++;
+              const existing = ctx.ui.getEditorText();
+              ctx.ui.setEditorText(existing ? `${existing.replace(/\s+$/, "")} ${text}` : text);
+              if (rec === recording) {
+                status(ctx, `● REC — press ${TRIGGER_KEY} to stop · ${result.textChunks} chunk${result.textChunks === 1 ? "" : "s"} transcribed`, false);
+              }
+            }
+          }
+        } catch (err: any) {
+          // Notify once and stop draining — later chunks would hit the same
+          // failure (engine missing) and spam errors. Files are cleaned up by
+          // the stop handler / next recording start.
+          ctx.ui.notify(`voice-input: ${err.message ?? err}`, "error");
+          break;
+        } finally {
+          try { fs.unlinkSync(cur); } catch {}
+        }
+        i++;
+        continue;
+      }
+      if (recording.ended && !curExists) break; // recorder done, queue drained
+      await sleep(250);
+    }
+    return result;
   }
 }
 
 interface Recording {
   proc: ChildProcess;
-  done: Promise<void>;   // resolves when ffmpeg has exited (WAV finalized)
+  done: Promise<void>;   // resolves when ffmpeg has exited (all segments finalized)
   stopped: boolean;      // we asked it to stop (user press or auto-stop timer)
+  ended: boolean;        // ffmpeg has exited — pump may consume the last segment
   timer: ReturnType<typeof setTimeout>;
+  pump?: Promise<PumpResult>; // streaming transcription queue; resolves when drained
+}
+
+interface PumpResult {
+  audioSegs: number;     // segments that contained real audio (0 → mic problem)
+  textChunks: number;    // segments that produced non-empty text
 }

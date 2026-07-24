@@ -31,7 +31,7 @@
 - `/important "note"` — persistent note (saved to _purpose.md, survives compaction)
 - `/important -compact "note"` — same + force compaction after
 - `/q "message"` — queue work for after you finish
-- `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech, transcript lands in their input box)
+- `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech; audio is chunked every 30s and each chunk's transcript streams into their input box while they keep talking)
 - `/guide` — load this PiForge guide
 
 ### Knowledge files
