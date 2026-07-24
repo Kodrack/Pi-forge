@@ -127,7 +127,7 @@ Use it BEFORE implementing when:
 
 | Extension | What it does | Default |
 |---|---|---|
-| `voice-input.ts` | `è` records the mic, `è` again stops → local speech-to-text → transcript lands in the input editor, Enter sends. Fully self-provisioning | on |
+| `voice-input.ts` | `è` records the mic, `è` again stops → local speech-to-text → transcript lands in the input editor, Enter sends. Streams: audio is recorded in 30s chunks, each transcribed while you keep talking, so the prompt fills gradually — dictate for minutes (10 min auto-stop). Fully self-provisioning | on |
 
 Zero setup: on session start the extension provisions itself in the background — creates an isolated venv at `~/.pi/stt-venv` (container-like: self-contained, never touches system python, `rm -rf` to remove), pip-installs the engine into it, and pre-downloads the model by transcribing 1s of silence. The footer status live-reports each step (`🎤 setting up parakeet: installing…` → `🎤 è · parakeet ready`); setup output goes to `~/.pi/stt-setup.log`. Nothing runs between transcriptions — the engine is spawned per use and exits in seconds (no daemon, zero idle RAM; models cached on disk in `~/.cache/huggingface`).
 
