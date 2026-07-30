@@ -33,8 +33,8 @@
 // key matcher can't represent (ASCII-only KeyId) — so this extension wraps the
 // input editor via ctx.ui.setEditorComponent/CustomEditor and intercepts the
 // raw character in handleInput. Consequence: you can no longer TYPE è into the
-// prompt (paste still works, and é/shift is unaffected). Conflicts with any
-// other extension that also sets a custom editor component.
+// prompt (paste still works, and é/shift is unaffected). Composes with other
+// extensions that wrap the editor the same way, whatever the load order.
 //
 // Recording uses ffmpeg avfoundation (auto-installed via brew if missing).
 // The terminal app needs microphone permission — macOS prompts on first use.
@@ -265,12 +265,11 @@ export default function voiceInput(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isEnabled()) return;
-    if (ctx.ui.getEditorComponent()) {
-      ctx.ui.notify("voice-input: another extension already set a custom editor — è trigger disabled", "warning");
-      return;
-    }
+    // Compose with any editor factory another extension installed, so every
+    // raw-char trigger keeps working regardless of load order.
+    const prev = ctx.ui.getEditorComponent();
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-      const editor = new CustomEditor(tui, theme, keybindings);
+      const editor = prev ? prev(tui, theme, keybindings) : new CustomEditor(tui, theme, keybindings);
       const baseHandleInput = editor.handleInput.bind(editor);
       editor.handleInput = (data: string) => {
         if (isTrigger(data)) {
