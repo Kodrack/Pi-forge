@@ -82,6 +82,15 @@ for file in models.json settings.json; do
   fi
 done
 
+# ---------- 6b. Patch Pi's context-file loader ----------
+# Pi picks ONE context file per directory from
+#   ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]
+# for the cwd and EVERY ancestor dir. PiForge's contract is a single global
+# AGENTS.md, so drop the CLAUDE.md fallbacks — otherwise any repo with a
+# CLAUDE.md and no AGENTS.md silently feeds Claude-Code instructions to the
+# local model. Idempotent; must be re-run after upgrading pi.
+bash "$PIFORGE_DIR/patch-pi-loader.sh"
+
 # ---------- 7. Done ----------
 echo ""
 echo "╔══════════════════════════════════════╗"

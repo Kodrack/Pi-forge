@@ -24,12 +24,15 @@ const TOGGLEABLE = [
   { name: "purpose-anchor",     description: "Captures session purpose, re-injects after compaction (idle when task complete)" },
   { name: "completion-guard",   description: "Blocks source edits after _state.md Status: complete; caps changes/turn" },
   { name: "execution-guard",    description: "Blocks Status: complete while modified code was never executed (for unattended runs; off by default)" },
+  { name: "acceptance-guard",   description: "Runs .think/_acceptance.sh at completion; blocks Status: complete unless it exits 0 (supersedes execution-guard)" },
+  { name: "progress-checkpoint", description: "On a stalled session (no file changes), demands \"done\" or a concrete next action — hands off to you after 2 ignored" },
   { name: "done-nudge",         description: "Suggests declaring completion after repeated executions with no source changes" },
   { name: "distill",            description: "/distill command + distill_codebase tool" },
   { name: "distill-query",      description: "/l1 /l2 /l3 direct level queries" },
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
   { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
   { name: "voice-input",        description: "Push-to-talk voice input (è key), local STT via parakeet or moonshine" },
+  { name: "project-jail",       description: "Blocks file mutations outside the project root (cwd) — write/edit/bash confined to the project" },
 ];
 
 function readConfig(): { disabled: string[] } {
