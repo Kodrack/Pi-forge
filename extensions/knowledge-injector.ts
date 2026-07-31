@@ -33,6 +33,26 @@ import * as crypto from "crypto";
 import { exec } from "child_process";
 import { promisify } from "util";
 
+// Pin the sub-Pi to the SAME provider/model as the main session.
+//
+// A sub-Pi subprocess otherwise resolves its own default model, and if that
+// resolution fails Pi falls back to its built-in default provider rather than
+// erroring — so a config mismatch can silently route sub-Pi work to a different
+// (possibly paid, cloud) model with nothing in the output to reveal it. Passing
+// the flags explicitly keeps every sub-Pi call on the local model and makes a
+// bad id fail loudly instead.
+function subPiModelFlags(): string {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "settings.json"), "utf-8"));
+    const provider = s?.defaultProvider;
+    const model = s?.defaultModel;
+    return provider && model ? ` --provider ${provider} --model "${model}"` : "";
+  } catch {
+    return "";
+  }
+}
+
+
 const execAsync = promisify(exec);
 const SUB_PI_TIMEOUT = 60000; // 60s timeout for subprocess calls
 
@@ -158,7 +178,7 @@ ${content}`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline ${subPiModelFlags()} -p "@${promptFile}" < /dev/null`,
       { timeout: SUB_PI_TIMEOUT }
     );
     const result = (stdout || "").trim();
@@ -310,7 +330,7 @@ Otherwise NO.`;
 
   try {
     const { stdout } = await execAsync(
-      `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
+      `pi --no-session --no-extensions --no-tools --thinking off --offline ${subPiModelFlags()} -p "@${promptFile}" < /dev/null`,
       { timeout: SUB_PI_TIMEOUT }
     );
     const reply = (stdout || "").trim().toUpperCase();

@@ -1,0 +1,22 @@
+Build a spreadsheet formula evaluator in a single file named sheet.js in this directory.
+
+CLI contract:
+  node sheet.js <input.txt>
+The input file contains one cell definition per line, in the form <CELL> = <formula>, e.g.:
+  A1 = 5
+  B2 = A1*2+3
+
+Rules:
+- Cell names: one uppercase letter followed by 1 or 2 digits (A1 through Z99).
+- Formulas contain: numbers (integers or decimals), cell references, the operators + - * /, and parentheses. Standard precedence (* and / bind tighter than + and -), left-associative. Whitespace may appear anywhere.
+- A cell may reference cells defined LATER in the file — evaluation order is dependency order, not file order.
+- A reference to a cell that is never defined evaluates to 0.
+- CYCLES: any cell that participates in a reference cycle — or that depends, directly or transitively, on a cell in a cycle — has the value CYCLE.
+
+Output: for every input line, in the SAME ORDER as the input, print one line:
+  <CELL> = <value>
+where <value> is String(number) (e.g. 15 or 12.5) or the word CYCLE. Nothing else on stdout.
+
+Hard rules: write your own tokenizer and recursive-descent parser. No npm packages. No eval(), no new Function() — using either is an automatic fail.
+
+Work incrementally: parser first, then dependency resolution, then cycle handling. Test with a file containing forward references and a deliberate cycle before declaring the task done.

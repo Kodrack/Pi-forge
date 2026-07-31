@@ -1,0 +1,18 @@
+Build a small CSV toolkit in this directory, split across exactly THREE files:
+  csv.js — parseCSV(text) returning an array of rows (each row an array of strings), and serializeCSV(rows) returning text
+  ops.js — the select / where / sum operations over parsed rows
+  cli.js — the command-line entry point (requires the other two)
+
+CLI contract (must work exactly like this):
+  node cli.js select <col1,col2,...> <file.csv>   → print a CSV containing only those columns, in the given order
+  node cli.js where <col>=<value> <file.csv>      → print a CSV with the header row plus only the data rows where that column equals the value exactly (string comparison; the value is everything after the first "=")
+  node cli.js sum <col> <file.csv>                → print a single number: the sum of that column over the data rows; empty or non-numeric fields count as 0. Print String(total) and nothing else.
+
+CSV rules (RFC 4180 — implement a character-by-character state machine, do NOT split on commas or newlines naively):
+- The first row is the header.
+- A field wrapped in double quotes may contain commas, newlines, and doubled quotes ("" = one literal quote character).
+- A newline INSIDE a quoted field is part of the field value, not a row separator. Splitting the file on newlines first is wrong and will fail.
+- On OUTPUT: quote a field only when it contains a comma, a double quote, or a newline; escape quotes by doubling them. Separate rows with \n.
+- Print results to stdout.
+
+No npm packages. Work incrementally: parser first, then ops, then CLI. Test with genuinely tricky input (a field like "Smith, John", a field with embedded ""quotes"", a field containing a newline) by creating a test CSV and running the CLI before declaring the task done.

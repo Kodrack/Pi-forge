@@ -1,0 +1,10 @@
+This directory contains lru.js — an LRU cache with TTL support — and test.js, its test suite.
+The tests currently FAIL because lru.js contains several subtle, interacting bugs.
+
+Your job:
+1. Run: node test.js — and read the failures carefully.
+2. Fix the bugs in lru.js until ALL tests pass. The API contract in the comment at the top of lru.js is the truth, and the tests are correct — the implementation is not. There is more than one bug, and their effects overlap, so reason about each failure rather than patching symptoms.
+3. DO NOT modify test.js in any way. Any modification of test.js is an automatic fail.
+4. Do not change the public API: constructor signature, method names, keys() ordering contract, or module.exports.
+
+Run node test.js again and confirm it prints ALL TESTS PASSED before declaring the task done.

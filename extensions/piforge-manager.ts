@@ -20,6 +20,8 @@ const TOGGLEABLE = [
   { name: "first-prompt",       description: "Appends 'plan in steps, implement one at a time' to first prompt" },
   { name: "knowledge-injector", description: "Isolated LLM call selects knowledge files before turn 1" },
   { name: "plan-clarify",       description: "Asks ≤3 clarifying questions after _plan.md is written" },
+  { name: "deep-plan",          description: "/plan <task> — researches in an isolated read-only sub-Pi (web search on), writes _plan.md, then enforces step order" },
+  { name: "bash-output-guard",  description: "Replaces oversized bash/grep/find/ls results with a summary naming the heaviest files — caps what a tool RETURNS" },
   { name: "state-guard",        description: "Blocks source reads until _state.md read; forces updates every 3 turns" },
   { name: "purpose-anchor",     description: "Captures session purpose, re-injects after compaction (idle when task complete)" },
   { name: "completion-guard",   description: "Blocks source edits after _state.md Status: complete; caps changes/turn" },

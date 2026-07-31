@@ -24,6 +24,26 @@ import { promisify } from "util";
 import * as https from "https";
 import * as http from "http";
 
+// Pin the sub-Pi to the SAME provider/model as the main session.
+//
+// A sub-Pi subprocess otherwise resolves its own default model, and if that
+// resolution fails Pi falls back to its built-in default provider rather than
+// erroring — so a config mismatch can silently route sub-Pi work to a different
+// (possibly paid, cloud) model with nothing in the output to reveal it. Passing
+// the flags explicitly keeps every sub-Pi call on the local model and makes a
+// bad id fail loudly instead.
+function subPiModelFlags(): string {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "settings.json"), "utf-8"));
+    const provider = s?.defaultProvider;
+    const model = s?.defaultModel;
+    return provider && model ? ` --provider ${provider} --model "${model}"` : "";
+  } catch {
+    return "";
+  }
+}
+
+
 const execAsync = promisify(exec);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -335,7 +355,7 @@ Write a clear, actionable summary (max 400 words) using ONLY the content above. 
     let rawOut = "";
     try {
       const { stdout } = await execAsync(
-        `pi --no-session --no-extensions --no-tools --thinking off --offline -p "@${promptFile}" < /dev/null`,
+        `pi --no-session --no-extensions --no-tools --thinking off --offline ${subPiModelFlags()} -p "@${promptFile}" < /dev/null`,
         { cwd: searchDir, timeout: SUB_PI_TIMEOUT }
       );
       rawOut = (stdout || "").trim();
