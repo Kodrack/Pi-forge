@@ -1,0 +1,23 @@
+Implement a miniature regular-expression engine from scratch, in a single file named regex.js in this directory.
+
+CLI contract (exactly this):
+  node regex.js "<pattern>" "<text>"
+prints exactly "match" if the WHOLE text matches the pattern, otherwise "no-match". Nothing else on stdout.
+
+Supported pattern syntax:
+- literal characters
+- . matches any single character
+- * = zero or more of the previous element, + = one or more, ? = zero or one
+- | alternation, lowest precedence (a|bc matches "a" or "bc")
+- ( ) grouping; quantifiers apply to groups, e.g. (ab)+
+- [abc] character class, [a-z] ranges, [^...] negated class
+- The empty pattern matches only the empty text.
+- Patterns will never contain backslashes; no escape support needed.
+
+Correctness requires real backtracking (or NFA simulation): a greedy first-choice matcher WILL fail on patterns like (a|ab)*c against the text "ababc" — which DOES match. Handle such cases correctly.
+
+Hard rules:
+- No npm packages.
+- Do NOT use JavaScript's built-in regular expressions anywhere in regex.js: no RegExp, no /.../ literals, no .match()/.test()/.exec()/.split(regex). Implement tokenizing and matching yourself with plain string operations. Any use of built-in regex is an automatic fail.
+
+Work incrementally. Test your engine by running node regex.js with several tricky cases (quantified groups, alternation inside repetition, negated classes) before declaring the task done.

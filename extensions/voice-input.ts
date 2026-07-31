@@ -57,8 +57,90 @@ function isTrigger(data: string): boolean {
   return data === TRIGGER_KEY || TRIGGER_CSI.test(data);
 }
 
+// ---------- AUDIO DEVICE RESOLUTION ----------
+// Resolved once per session and reported in the banner, so "which device am I
+// recording?" is never an invisible question again.
+type AudioDevice = { index: number; name: string };
+let resolvedDevice: AudioDevice | null = null;
+let deviceNote = "";
+
+async function listAudioDevices(ffmpeg: string): Promise<AudioDevice[]> {
+  // execFile directly, NOT the run() helper: ffmpeg exits nonzero on a
+  // device-list query (there is no input file) and prints the list to stderr,
+  // and run() rejects with only the last 500 chars of stderr folded into a
+  // message string. The device list can exceed that, so use the raw stderr.
+  const out: string = await new Promise((resolve) => {
+    execFile(ffmpeg, ["-f", "avfoundation", "-list_devices", "true", "-i", ""],
+      { timeout: 15000, maxBuffer: 1024 * 1024 },
+      (_err, _stdout, stderr) => resolve(String(stderr ?? "")));
+  });
+  const devices: AudioDevice[] = [];
+  const audioPart = out.slice(out.indexOf("AVFoundation audio devices"));
+  for (const line of audioPart.split("\n")) {
+    const m = line.match(/\[(\d+)\]\s+(.+?)\s*$/);
+    if (m) devices.push({ index: parseInt(m[1], 10), name: m[2] });
+  }
+  return devices;
+}
+
+function isVirtual(name: string): boolean {
+  const n = name.toLowerCase();
+  return VIRTUAL_DEVICE_PATTERNS.some((p) => n.includes(p));
+}
+
+async function resolveAudioDevice(ffmpeg: string): Promise<string> {
+  if (AUDIO_DEVICE) return AUDIO_DEVICE.startsWith(":") ? AUDIO_DEVICE : `:${AUDIO_DEVICE}`;
+  if (resolvedDevice) return `:${resolvedDevice.index}`;
+
+  const devices = await listAudioDevices(ffmpeg);
+  if (devices.length === 0) {
+    deviceNote = "could not enumerate devices — falling back to :0";
+    return ":0";
+  }
+
+  const real = devices.filter((d) => !isVirtual(d.name));
+  if (real.length === 0) {
+    // Everything looks virtual. Recording anyway beats refusing, but say so:
+    // this is the exact state that produced silent audio and an empty transcript.
+    resolvedDevice = devices[0];
+    deviceNote = `WARNING: every input looks virtual (${devices.map((d) => d.name).join(", ")}) — audio may be silent`;
+    return `:${resolvedDevice.index}`;
+  }
+
+  const preferred =
+    real.find((d) => PREFERRED_DEVICE_PATTERNS.some((p) => d.name.toLowerCase().includes(p))) ?? real[0];
+  resolvedDevice = preferred;
+
+  const skipped = devices.filter((d) => d.index !== preferred.index && isVirtual(d.name));
+  deviceNote = skipped.length ? `skipped virtual: ${skipped.map((d) => d.name).join(", ")}` : "";
+  return `:${preferred.index}`;
+}
+
 const DEFAULT_ENGINE: Engine = "parakeet";
-const AUDIO_DEVICE = ":0";           // avfoundation ":<idx>" — :0 = default mic; list with: ffmpeg -f avfoundation -list_devices true -i ""
+
+// Capture device. null = resolve BY NAME at runtime (recommended); set a literal
+// ":<idx>" or a device name substring to pin it.
+//
+// This used to be a hardcoded ":0" — "the default mic". avfoundation indices are
+// not stable: they are positions in an enumeration that changes whenever an audio
+// device is added or removed. Installing a virtual audio device (BlackHole,
+// Loopback, an Aggregate/Multi-Output, etc.) can insert it at index 0 and push
+// the real mic to 1, so voice-input starts recording a
+// virtual loopback device. That fails in the worst possible way — BlackHole
+// carries system audio, so with nothing playing it yields perfectly valid SILENT
+// audio. Segments were produced (no "check mic permission" error) and the
+// transcript came back empty, with nothing pointing at the cause.
+const AUDIO_DEVICE: string | null = null;
+
+// Virtual / loopback devices: never a microphone, always silence when idle.
+// Matched case-insensitively against the avfoundation device name.
+const VIRTUAL_DEVICE_PATTERNS = [
+  "blackhole", "soundflower", "loopback", "aggregate", "multi-output",
+  "teams audio", "airbeamtv", "zoomaudio", "krisp", "vb-cable", "ishowu",
+];
+
+// Preferred when several real devices exist.
+const PREFERRED_DEVICE_PATTERNS = ["macbook", "built-in", "internal", "microphone", "mic"];
 const SAMPLE_RATE = 16000;           // both engines want 16kHz mono
 const CHUNK_SECONDS = 30;            // streaming segment length — each chunk is transcribed while recording continues
 const MAX_RECORD_MS = 600000;        // auto-stop safety net (10 min; streaming keeps up regardless of length)
@@ -281,6 +363,23 @@ export default function voiceInput(pi: ExtensionAPI) {
       return editor;
     });
     ctx.ui.notify(`voice-input active (${currentEngine()}, press ${TRIGGER_KEY} to record/stop, /stt to switch engine)`, "info");
+
+    // Resolve and REPORT the mic up front. The failure this prevents is silent
+    // by nature — a virtual device records fine and just has nothing in it — so
+    // the only defence is saying out loud which input is armed.
+    void (async () => {
+      try {
+        const ffmpeg = resolveBin("ffmpeg");
+        if (!ffmpeg) return; // setup path installs it and reports its own errors
+        await resolveAudioDevice(ffmpeg);
+        if (resolvedDevice) {
+          ctx.ui.notify(
+            `voice-input: mic → "${resolvedDevice.name}" (:${resolvedDevice.index})${deviceNote ? ` · ${deviceNote}` : ""}`,
+            deviceNote.startsWith("WARNING") ? "warning" : "info",
+          );
+        }
+      } catch { /* setup path already reports its own failures */ }
+    })();
     void ensureEngine(ctx, currentEngine()); // background auto-setup, footer shows progress
   });
 
@@ -301,6 +400,51 @@ export default function voiceInput(pi: ExtensionAPI) {
       } else {
         ctx.ui.notify(`voice input engine: ${currentEngine()} (switch: /stt parakeet | /stt moonshine)`, "info");
       }
+    },
+  });
+
+  pi.registerCommand("stt-device", {
+    description: "List audio inputs and show which one voice-input records. Usage: /stt-device [<index|name substring>]",
+    handler: async (args: any, ctx: any) => {
+      const ffmpeg = resolveBin("ffmpeg");
+      if (!ffmpeg) {
+        ctx.ui.notify("voice-input: ffmpeg not installed yet — press the trigger key once to run setup", "error");
+        return;
+      }
+      const devices = await listAudioDevices(ffmpeg);
+      const pick = String(args ?? "").trim();
+
+      if (pick) {
+        const byIndex = devices.find((d) => String(d.index) === pick);
+        const byName = devices.find((d) => d.name.toLowerCase().includes(pick.toLowerCase()));
+        const chosen = byIndex ?? byName;
+        if (!chosen) {
+          ctx.ui.notify(`voice-input: no input matches "${pick}". Run /stt-device with no argument to list them.`, "error");
+          return;
+        }
+        resolvedDevice = chosen;
+        deviceNote = "set manually this session";
+        ctx.ui.notify(
+          `voice-input: mic → "${chosen.name}" (:${chosen.index}) for this session.\n` +
+          `To make it permanent, set AUDIO_DEVICE = ":${chosen.index}" in voice-input.ts and /reload.`,
+          isVirtual(chosen.name) ? "warning" : "info",
+        );
+        return;
+      }
+
+      if (devices.length === 0) {
+        ctx.ui.notify("voice-input: could not enumerate audio inputs", "error");
+        return;
+      }
+      await resolveAudioDevice(ffmpeg);
+      ctx.ui.notify(
+        `voice-input inputs (● = in use):\n` +
+        devices
+          .map((d) => `  ${resolvedDevice?.index === d.index ? "●" : " "} [${d.index}] ${d.name}${isVirtual(d.name) ? "   (virtual — skipped)" : ""}`)
+          .join("\n") +
+        `\nOverride with /stt-device <index|name>.`,
+        "info",
+      );
     },
   });
 
@@ -330,7 +474,16 @@ export default function voiceInput(pi: ExtensionAPI) {
           throw new Error("no audio captured — check mic permission for your terminal (System Settings → Privacy → Microphone)");
         }
         if (drained.textChunks === 0) {
-          ctx.ui.notify("voice-input: transcription came back empty", "warning");
+          // Audio WAS captured (else the throw above fired), so the recording
+          // was silent or unintelligible. By far the most common cause is
+          // recording the wrong input — name the device rather than making the
+          // user guess, which is what cost an afternoon on 2026-07-31.
+          const dev = resolvedDevice ? `"${resolvedDevice.name}" (:${resolvedDevice.index})` : AUDIO_DEVICE ?? ":0";
+          ctx.ui.notify(
+            `voice-input: transcription came back empty — ${drained.audioSegs} segment(s) recorded from ${dev}, ` +
+            `but no speech in them. Check you spoke into THAT device (/stt-device lists them), or that it is not muted.`,
+            "warning",
+          );
         }
       } catch (err: any) {
         ctx.ui.notify(`voice-input: ${err.message ?? err}`, "error");
@@ -350,9 +503,10 @@ export default function voiceInput(pi: ExtensionAPI) {
     }
     try { fs.rmSync(SEG_DIR, { recursive: true, force: true }); } catch {}
     fs.mkdirSync(SEG_DIR, { recursive: true });
+    const device = await resolveAudioDevice(ffmpeg);
     const proc = spawn(ffmpeg, [
       "-hide_banner", "-loglevel", "error",
-      "-f", "avfoundation", "-i", AUDIO_DEVICE,
+      "-f", "avfoundation", "-i", device,
       "-ar", String(SAMPLE_RATE), "-ac", "1",
       "-f", "segment", "-segment_time", String(CHUNK_SECONDS),
       "-segment_format", "wav", "-reset_timestamps", "1",

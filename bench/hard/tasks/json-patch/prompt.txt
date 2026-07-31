@@ -1,0 +1,24 @@
+Implement JSON Patch (RFC 6902) in a single file named patch.js in this directory.
+
+CLI contract:
+  node patch.js <doc.json> <patch.json>
+- doc.json contains an arbitrary JSON document; patch.json contains an ARRAY of patch operations.
+- Apply the operations IN ORDER. On success print exactly JSON.stringify(result) and nothing else.
+- If ANY operation fails, print exactly ERROR (just that word) and nothing else. Application is atomic: a failure means no partial result is printed.
+
+Operations (each op object has "op", "path", and depending on op: "value" or "from"):
+- add:     insert value at path. Object key: insert or overwrite. Array index: INSERT at that position, shifting later elements right; the index may equal the array length (= append); larger is an error. Path "-" as the final segment means append to the array.
+- remove:  remove the value at path. The path must exist.
+- replace: replace the value at path. The path must exist.
+- move:    remove the value at "from", then add it at "path". "from" must exist.
+- copy:    deep-copy the value at "from" and add it at "path". "from" must exist.
+- test:    check that the value at path is DEEPLY equal to "value" (recursive comparison, object key order irrelevant). Not equal → the whole patch fails.
+
+Paths are JSON Pointers (RFC 6901):
+- "" (empty string) refers to the WHOLE document (e.g. replace with path "" swaps the entire doc).
+- "/a/b" navigates object keys and array indices; array indices are plain decimal digits.
+- In a segment, "~1" decodes to "/" and "~0" decodes to "~" (decode ~1 before ~0).
+
+Failure cases that must print ERROR: a path that does not exist (for remove / replace / test / move-from / copy-from), an array index out of bounds, a failed test op, malformed pointer.
+
+No npm packages. Work incrementally, and test with real patch files (create small doc/patch JSON files and run the CLI) — including a move within an array and a failing test op — before declaring the task done.
