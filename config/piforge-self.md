@@ -19,7 +19,7 @@
 - Declaring `Status: complete` while modified code was never executed may be **blocked** (when execution-guard is enabled) — run your code and read the output before declaring done
 - When your checks keep passing and you change nothing, you get nudged to mark `_state.md` complete and STOP — do not keep re-testing or invent extra improvements
 - Repeating the same write or near-identical response gets warned, then blocked — change approach, do NOT retry the same payload
-- Context at 65% triggers warning, 80% triggers forced compaction — write state to .think/ first
+- Context at 65% triggers warning, 80% triggers forced compaction — write state to .think/ first. After compaction the session resumes AUTOMATICALLY (up to 3 times without user input, never once `_state.md` says complete): read `_state.md` and continue, do not wait for the user
 - Long responses without file writes get flagged — save findings to step files
 - Source reads blocked until `_state.md` is read
 

@@ -10,6 +10,12 @@
 // every FULL_AGENTS_EVERY-th compaction, a ~250-token condensed digest in
 // between (set FULL_AGENTS_EVERY = 1 for full AGENTS.md every time).
 //
+// The reinjection AUTO-CONTINUES the session: Pi's compact() aborts the agent
+// loop first (agent-session.js), so a plain steer message would sit unread
+// until the user types. triggerTurn: true starts the turn ourselves — unless
+// .think/_state.md says Status: complete, or MAX_AUTO_CONTINUES consecutive
+// auto-turns have fired without any real user input.
+//
 // Install: copy to ~/.pi/agent/extensions/context-monitor.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -45,6 +51,19 @@ const FORCE_COMPACT_PERCENT = 80; // force compaction — no warning, just compa
 // 1 = full AGENTS.md every compaction (legacy behavior).
 // 4 = full on compaction 1, 5, 9, ... — condensed digest (~250 tokens) in between.
 const FULL_AGENTS_EVERY = 4;
+
+// Max consecutive reinjections that auto-trigger a turn without any real user
+// input in between. Any interactive/rpc input resets the counter.
+const MAX_AUTO_CONTINUES = 3;
+
+// Same completion detection as acceptance-guard.ts — keep the two in sync.
+const COMPLETE_STATUS = /##\s*Status:\s*[^\n]*\b(complete|completed|done|finished)\b/i;
+
+// .think/_state.md says the task is done — do not auto-continue past that.
+function stateSaysComplete(): boolean {
+  const state = readFileOrNull(path.join(process.cwd(), ".think", "_state.md"));
+  return state !== null && COMPLETE_STATUS.test(state);
+}
 
 // Sent to the compaction summarizer — keeps the summary tiny since durable
 // state lives in .think/ on disk, but protects findings not yet written there.
@@ -87,6 +106,13 @@ function formatMessage(template: string, percent: number): string {
 export default function (pi: ExtensionAPI) {
   let warnFired = false;
   let compactionCount = 0;
+  let autoContinueCount = 0;
+
+  // Real user input (typed or rpc) resets the auto-continue budget.
+  pi.on("input", async (event) => {
+    if (event.source !== "extension") autoContinueCount = 0;
+    return undefined;
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     const usage = ctx.getContextUsage();
@@ -182,6 +208,14 @@ export default function (pi: ExtensionAPI) {
       ? `\n\nPROJECT-SPECIFIC RULES (project AGENTS.md, always in full):\n---\n${extraMd}\n---`
       : "";
     const content = `${rulesPart}${projectPart}\n\nNow read .think/_state.md and continue from where you left off.`;
+
+    // Pi's compact() aborted the agent loop, so without triggerTurn this message
+    // waits for the user. Auto-continue unless the task is done or the budget is spent.
+    const complete = stateSaysComplete();
+    const capped = autoContinueCount >= MAX_AUTO_CONTINUES;
+    const autoContinue = !complete && !capped;
+    if (autoContinue) autoContinueCount++;
+
     await pi.sendMessage(
       {
         customType: "agents_md_reinjection",
@@ -195,13 +229,18 @@ export default function (pi: ExtensionAPI) {
             (extraMd ? " + project AGENTS.md in full" : ""),
         },
       },
-      { deliverAs: "steer" }
+      { deliverAs: "steer", triggerTurn: autoContinue }
     );
     ctx.ui.notify(
       (useFull
         ? `context-monitor: full AGENTS.md re-injected (compaction #${compactionCount})`
         : `context-monitor: condensed digest injected (compaction #${compactionCount})`) +
-        (extraMd ? " + project rules" : ""),
+        (extraMd ? " + project rules" : "") +
+        (autoContinue
+          ? ` — auto-continuing (${autoContinueCount}/${MAX_AUTO_CONTINUES})`
+          : complete
+            ? " — NOT auto-continuing (_state.md says complete)"
+            : ` — NOT auto-continuing (${MAX_AUTO_CONTINUES} auto-turns without user input; type anything to resume)`),
       "info"
     );
   });
