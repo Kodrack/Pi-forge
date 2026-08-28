@@ -87,6 +87,58 @@ function taskMarkedComplete(cwd: string): boolean {
   }
 }
 
+// AUTO-RESET (replaces the old hard REOPEN GUARD): when a new user request
+// arrives while _state.md still says "complete", the STALE STATE FILE is the
+// problem — not the model's next edit. Blocking that edit only taught the model
+// to route around the block with bash redirects, which produced worse code than
+// a plain 'edit' would have. So fix the state file here, programmatically, and
+// let the work proceed. Nothing is blocked and no model turn is spent.
+//
+// Archived, never deleted: the previous _state.md and _plan.md are renamed
+// aside so the finished task's record survives. _purpose.md, step-*.md and the
+// knowledge files are deliberately left alone — they hold user-authored notes
+// (/important) and accumulated history that outlive a single task.
+function resetForNewTask(cwd: string, prompt: string): string[] {
+  const thinkDir = path.join(cwd, ".think");
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "");
+  const moved: string[] = [];
+
+  for (const name of ["_state.md", "_plan.md"]) {
+    try {
+      const src = path.join(thinkDir, name);
+      if (!fs.existsSync(src)) continue;
+      const dest = path.join(thinkDir, name.replace(/\.md$/, "") + ".done-" + stamp + ".md");
+      fs.renameSync(src, dest);
+      moved.push(path.basename(dest));
+    } catch {
+      // archiving is best-effort — it must never break the user's turn
+    }
+  }
+
+  const task = (prompt || "").replace(/\s+/g, " ").trim().slice(0, 200) || "(new request)";
+  const archived = moved.join(", ") || "none";
+  try {
+    fs.writeFileSync(
+      path.join(thinkDir, "_state.md"),
+      `## Task: ${task}
+## Progress: Step 0 — not started
+## Completed: (previous task archived: ${archived})
+## Status: in-progress
+## Last Action: state auto-reset by state-guard on a new user request
+## Next Action: read the user's request and plan the first concrete step
+## Key Files:
+## Decisions:
+## Read First:
+`,
+      "utf-8"
+    );
+  } catch {
+    // if we cannot write state, the stale nag will ask the model to do it
+  }
+
+  return moved;
+}
+
 const STALE_MESSAGE = `[state-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.
 You haven't updated .think/_state.md in the last ${STALE_TURN_THRESHOLD} turns.
 Your progress will be lost if context compacts.
@@ -129,10 +181,23 @@ export default function (pi: ExtensionAPI) {
   let turnHadStateWrite = false;
   let reopenPending = false; // user sent a new prompt while _state.md said complete
 
-  // REOPEN GUARD: each user input, check whether _state.md claims the task is
-  // done. If so, the model must rewrite _state.md before touching source files.
-  pi.on("input", (_event: any) => {
-    reopenPending = taskMarkedComplete(process.cwd());
+  // AUTO-RESET on a new request. The old behaviour armed a hard block here;
+  // see resetForNewTask() above for why that was replaced.
+  pi.on("input", (event: any, ctx?: any) => {
+    reopenPending = false;
+    if (taskMarkedComplete(process.cwd())) {
+      const moved = resetForNewTask(process.cwd(), (event as any).text ?? "");
+      turnsSinceStateWrite = 0; // we just wrote it — don't trip the stale nag
+      try {
+        ctx?.ui?.notify(
+          "state-guard: previous task was complete — _state.md reset for the new request" +
+            (moved.length ? " (archived " + moved.join(", ") + ")" : ""),
+          "info"
+        );
+      } catch {
+        // notify is cosmetic
+      }
+    }
     return { action: "continue" as const };
   });
 
@@ -209,24 +274,9 @@ export default function (pi: ExtensionAPI) {
       return; // at root, allow it
     }
 
-    // REOPEN GUARD: _state.md says "complete" but the user sent a new prompt.
-    // Hard-block source writes/edits until _state.md is rewritten — otherwise
-    // the stale "complete" record survives the next compaction and the model
-    // recovers into a state file that lies about reality.
-    if (reopenPending && (toolName === "write" || toolName === "edit")) {
-      return {
-        block: true,
-        reason:
-          `BLOCKED: .think/_state.md still says "Status: complete", but the user sent a new request. ` +
-          `The state file is stale — fix it BEFORE editing source files.\n` +
-          `1. Rewrite .think/_state.md NOW with:\n` +
-          `   ## Status: in-progress\n` +
-          `   ## Task: [the user's new request or reported problem]\n` +
-          `   ## Next Action: [your first concrete step]\n` +
-          `2. THEN retry this edit.\n` +
-          `Do NOT retry this tool call until _state.md is updated.`,
-      };
-    }
+    // (the hard REOPEN GUARD that used to live here was removed — a new user
+    // request now auto-resets _state.md in the "input" hook instead of
+    // blocking the edit and pushing the model toward bash workarounds)
 
     // Allow non-file tools
     if (ALWAYS_ALLOWED_TOOLS.has(toolName)) return;

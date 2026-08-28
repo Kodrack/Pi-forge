@@ -4,6 +4,9 @@
     "explore",
     "distill-awareness",
     "loop-guard",
-    "execution-guard"
+    "execution-guard",
+    "completion-guard",
+    "done-nudge",
+    "queue"
   ]
 }
