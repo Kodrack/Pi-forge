@@ -60,9 +60,9 @@ echo "✓ Global AGENTS.md installed: ~/.pi/agent/AGENTS.md (applies to every pr
 # models.json  — LM Studio provider + model list (edit model id to match yours)
 # settings.json — defaultProvider/Model, thinking level, compaction tuned for 50k context:
 #                 keepRecentTokens=28000, reserveTokens=8192
-# piforge.json — extension toggles (knowledge-injector, plan-clarify disabled by default)
+# piforge.json — extension toggles (see the file for which are disabled by default)
 cp "$PIFORGE_DIR/config/piforge.json" "$HOME/.pi/piforge.json"
-echo "✓ piforge.json installed (knowledge-injector, plan-clarify, explore, distill-awareness disabled by default)"
+echo "✓ piforge.json installed — run /piforge in a session to see and toggle what is disabled"
 
 for file in models.json settings.json; do
   src="$PIFORGE_DIR/config/$file"
