@@ -161,6 +161,18 @@ const asked = { research_requested: new Date().toISOString() };
     p.includes(`PRD: ${path.join(E.mind, "prd/PRD-001.md")}`) && !/PRD: prd\//.test(p));
 }
 
+// ---- R8: ingest runs as a pure text job: no tools, NO extensions ----
+{
+  const E = makeEnv([{ stage: "", match: "RAW REQUIREMENTS", out: `<<<PRD>>>\n# PRD: Sushi\n<<<TASKS>>>\n${JSON.stringify([{ title: "Scaffold", priority: 1 }, { title: "Menu", depends_on: [0] }])}\n<<<END>>>` }]);
+  E.dory.enqueueIngest("I need a beautiful astro website about a sushi restaurant");
+  for (let i = 0; i < 20 && E.calls().length === 0; i++) await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 300));
+  const call = E.calls()[0];
+  check("R8 ingest runs pi with --no-extensions and --no-tools (no workflow guards, no voice setup)",
+    call && call.args.includes("--no-extensions") && call.args.includes("--no-tools"));
+  check("R8 ingest still creates the PRD's cards", E.card("T-001")?.title === "Scaffold" && JSON.stringify(E.card("T-002")?.depends_on) === '["T-001"]');
+}
+
 // ---- S: the real server's HTTP endpoint ----
 {
   const mind = path.join(ROOT, "server-mind");

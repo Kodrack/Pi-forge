@@ -1158,7 +1158,11 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     const cfg = config();
     activity = "ingesting requirements → PRD + tasks…";
     const pf = promptFile("ingest.md", INGEST_PROMPT + text);
-    const res = await runPi(cfg, ["--no-session", "--no-tools", "--thinking", cfg.dory_thinking || "off", "-p", `@${pf}`], workDir(cfg) || mindDir, INGEST_TIMEOUT_MS, { dory: true });
+    // Pure text in → text out: no tools AND no extensions (the sub-Pi isolation
+    // pattern). With extensions loaded, the coding workflow guards injected
+    // their rules ("read _state.md…") into the ingest prompt, and voice-input's
+    // background setup outlived the job and crashed the pi process.
+    const res = await runPi(cfg, ["--no-session", "--no-extensions", "--no-tools", "--thinking", cfg.dory_thinking || "off", "-p", `@${pf}`], workDir(cfg) || mindDir, INGEST_TIMEOUT_MS, { dory: true });
     const prd = between(res.out, "<<<PRD>>>", ["<<<TASKS>>>"]);
     const tasksRaw = between(res.out, "<<<TASKS>>>", ["<<<END>>>"]);
     let items;
