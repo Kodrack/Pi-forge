@@ -105,12 +105,14 @@ plan (reply to change it, or to turn it back into one card).
 2. Each subtask is planned **just in time**: only once the subtasks it depends
    on are Done, so its plan is written against code that exists. Every subtask
    plan comes back to you in Plan Created; you approve each one.
-3. A subtask that passes leaves a **handoff note** in `handoffs/T-NNN.md`: the
-   files that run changed, plus the executor's own `<<<HANDOFF>>>` notes. Later
-   subtask plans, executor runs and wave jobs of the same goal read them.
+3. Every card that passes its test records **which files it changed** (shown
+   in the card's panel). Later subtasks of the goal — and any card that
+   depends on it — get those as **file pointers** in their plan and executor
+   prompts, and read the real files. The code is the reference; Dory only
+   says where to look.
 4. When a wave is all Done, the engine runs the goal test. Pass → goal Done.
    Fail → a read-only **wave** job plans the next wave from the goal, the
-   handoffs and the failing output — or answers STUCK with what it needs from
+   files every subtask changed, and the failing output — or answers STUCK with what it needs from
    you (goal → Blocked).
 5. A Blocked subtask pauses its goal until you fix or delete it.
 
@@ -126,6 +128,21 @@ dependencies are dropped and reported, and a dependency cycle rejects the whole
 wave. Out of budget with the goal test still failing → goal Blocked with the
 last test output. Only `review` autonomy exists today: every subtask waits for
 your approval.
+
+**Cards are pinned to their project.** A card remembers the project it was
+created in (where `ù` was last pressed) and is only planned, researched and
+built there — never in whatever project Dory points at later. If your `/dory`
+session is in another project, the card waits and tells you to press `ù` in its
+project's Pi session; background jobs simply run in the card's own folder. A
+card whose project folder is gone is not run anywhere. The card panel shows
+its project; a card from another project gets a 📁 badge on the board.
+
+**How later cards know what earlier ones did:** the files themselves. Each
+passed card records the files its run changed (a snapshot of the project is
+taken when the card is claimed, so earlier cards' files and pre-existing
+edits are never credited to it). Plans, revisions, waves and executor runs of
+related cards — its dependencies, its goal's subtasks — get those file
+pointers and read the code. There is no separate journal to drift from it.
 
 **Planning order changed for every card:** a card in Plan Queue is planned only
 once the cards it `depends_on` are Done (before, cards from 📥 ingest were all

@@ -395,7 +395,7 @@ The master layer above the executor: a 7-column, conversation-driven kanban (`ch
 
 **🔎 Research on any card.** A button in the card's panel has Dory web-search the card (1–3 searches) and rewrite its title and description in place, with sources and your original text in the conversation; the card stays in its column, and an already-planned card is told to replan.
 
-**Long tasks become goals.** A card too big for one run is planned as a *goal*: an end-to-end goal test plus small waves of linked subtasks. Each subtask is planned only once the ones it depends on are done, reviewed by you, built, and leaves a handoff note for the next. When a wave is done the goal test decides: done, or Dory plans the next wave (or says what she's stuck on). Budgets (subtasks per wave, waves, total) are enforced in code. See `organizer/README.md` and `organizer/LONG-HORIZON.md`.
+**Long tasks become goals.** A card too big for one run is planned as a *goal*: an end-to-end goal test plus small waves of linked subtasks. Each subtask is planned only once the ones it depends on are done, reviewed by you, built, and records the files it changed (later related cards get those as pointers into the real code). When a wave is done the goal test decides: done, or Dory plans the next wave (or says what she's stuck on). Budgets (subtasks per wave, waves, total) are enforced in code. Every card is pinned to the project it was created in and is only worked on there. See `organizer/README.md` and `organizer/LONG-HORIZON.md`.
 
 | Extension | What it does | Default |
 |---|---|---|

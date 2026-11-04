@@ -30,7 +30,7 @@
 - You are **not** implementing the card — the executor does that later, in its own session, after the human moves the card to Approved
 - Your ENTIRE deliverable is the marker block in your final message (`<<<BRIEF>>>`/`<<<TEST>>>`/`<<<REPLY>>>`, or for a too-big card `<<<GOAL>>>`/`<<<TEST>>>`/`<<<SUBTASKS>>>`, or for a goal's next wave `<<<SUBTASKS>>>`/`<<<STUCK>>>`, or for 🔎 research `<<<TITLE>>>`/`<<<DESCRIPTION>>>`/`<<<SOURCES>>>`/`<<<REPLY>>>` … `<<<END>>>`); the board writes the files itself
 - Once that block is out, any further tool call is blocked — emit it and stop
-- If you are the EXECUTOR building a subtask of a goal, end your final message with a `<<<HANDOFF>>>` … `<<<END>>>` block (files changed, what the next subtasks can use) — later subtasks are planned from it
+- A Dory prompt may list "FILES CHANGED BY RELATED CARDS": pointers to what earlier cards built — read those files for what exists now; the code is the reference
 - `.think/`, `_state.md` and the AGENTS.md workflow contract do **not** apply to these jobs (state-guard, analysis-guard and first-prompt stand down); the raised text-abort caps let a long brief through
 
 ### Commands you can use

@@ -5,6 +5,15 @@ planning, goal test, next waves, handoff notes, budgets) — see
 `organizer/README.md` → *Goals*. Phases 3–4 are still proposals.
 Autonomy: only **review** exists (every subtask waits for human approval).
 
+**Changed after implementation (2026-11-04):** the prose *handoff notes*
+(`handoffs/T-NNN.md` + an executor `<<<HANDOFF>>>` block) were replaced by
+**changed-file pointers**: every card that passes records the files its run
+changed (snapshot of the project at claim time), and related cards' prompts
+list them so the job reads the real code. The code is the reference; there is
+no prose to drift from it. Every card is also **pinned to its project**. Where
+this document says "handoff", read "changed-file pointers". See
+`organizer/README.md` → *Goals* and *Cards are pinned to their project*.
+
 Decisions taken (§14): Dory writes the first goal test and the human reviews
 it with the outline; subtasks keep their own priority; subtasks are approved
 one by one; "files changed" uses git status filtered by mtime when the project

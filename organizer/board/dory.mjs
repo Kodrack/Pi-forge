@@ -21,11 +21,17 @@
 //           → blocked. Bare cards get a quick plan+test at pickup first.
 //   INGEST  (/api/ingest) massive raw text → prd/PRD-NNN.md + one task card
 //           per work item, created in plan_queue.
+//   PROJECT every card is PINNED to the project it was created in (task.project)
+//           and only worked on there. A card that passes its test records the
+//           files it changed (task.changed_files); plans, revisions, waves and
+//           executor runs of related cards (its dependencies, its goal's
+//           subtasks) get those as POINTERS and read the real files: the code
+//           is the reference, Dory only says where to look.
 //   GOALS   (long horizon, see organizer/LONG-HORIZON.md) a plan job may answer
 //           a too-big card with GOAL + goal test + a first wave of SUBTASKS.
 //           Approving the goal creates the wave as linked subtask cards; each
 //           is planned just in time (only once its deps are done), reviewed and
-//           built like any card, and leaves a handoff note. When a wave is done
+//           built like any card, and records the files it changed. When a wave is done
 //           the goal test runs: pass → goal done, fail → a read-only "wave" job
 //           plans the next wave (or says STUCK). Budgets are enforced in code.
 //
@@ -47,7 +53,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -69,13 +75,13 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 // Only "review" autonomy exists today: every subtask stops in plan_created for
 // the human, exactly like a normal card.
 const LH_DEFAULTS = { autonomy: "review", max_subtasks_per_wave: 4, max_waves: 5, max_subtasks_total: 15 };
-const HANDOFF_CONTEXT_MAX = 6000;   // chars of earlier handoffs fed into a subtask/wave prompt
+const POINTER_CARDS_MAX = 30;       // related cards listed as file pointers in one prompt
 const MAX_SPLIT_REJECTS = 2;
 const MAX_RESEARCH_FAILURES = 3;     // then the request is dropped and the human told        // a subtask answering with GOAL this often → blocked (depth limit)
 const CHANGED_FILES_MAX = 40;
 // Top-level sections of dory-persona.md (one per job kind that uses a persona).
 const PERSONA_SECTIONS = ["Research", "Chat", "Plan", "Revise", "Revise goal", "Wave"];
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", ".venv", "__pycache__"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", ".think", ".think-sessions", ".next", "dist", "build", ".venv", "__pycache__"]);
 
 // Which cooldown bucket a job kind uses ("reply" covers chat + respond).
 function cooldownKey(kind) {
@@ -136,7 +142,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   let jobCounter = 0;
 
   const TMP_DIR = path.join(mindDir, ".dory-tmp");
-  for (const d of ["tasks", "tests", "prd", "diary", "handoffs", ".dory-tmp"]) {
+  for (const d of ["tasks", "tests", "prd", "diary", ".dory-tmp"]) {
     fs.mkdirSync(path.join(mindDir, d), { recursive: true });
   }
   const gitignore = path.join(mindDir, ".gitignore");
@@ -205,25 +211,44 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return t?.parent ? board.tasks.find((x) => x.id === t.parent && isGoal(x)) ?? null : null;
   }
 
-  // Earlier subtasks' handoff notes for a goal, oldest first, trimmed from the
-  // front so the newest (most relevant) survive the size cap.
-  function handoffsText(board, goalId) {
-    const parts = subtasksOf(board, goalId)
-      .filter((x) => x.status === "done" && x.handoff && fs.existsSync(path.join(mindDir, x.handoff)))
+  // ── projects + file pointers ──────────────────────────────────────────────
+
+  // The project a card belongs to. A card remembers the project it was created
+  // in (task.project) and is only ever worked on there; cards from before
+  // pinning adopt the current project the first time Dory works on them.
+  // null = the card's project folder no longer exists.
+  function projectOf(task, cfg = config()) {
+    if (task?.project) return fs.existsSync(task.project) ? task.project : null;
+    return workDir(cfg);
+  }
+
+  function pinProject(task, project) {
+    if (task.project || !project) return;
+    withTask(task.id, (t) => { if (!t.project) t.project = project; }, `${task.id} pinned to ${project} (dory)`);
+    task.project = project;
+  }
+
+  // Done cards related to `task` — its dependencies, and (for a subtask or a
+  // goal) every subtask of the goal — with the files each changed. These are
+  // POINTERS: the job reads the real files for what exists now.
+  function filePointers(board, task) {
+    const ids = new Set(task.depends_on ?? []);
+    const goalId = isGoal(task) ? task.id : task.parent;
+    if (goalId) for (const x of subtasksOf(board, goalId)) ids.add(x.id);
+    ids.delete(task.id);
+    const rows = board.tasks
+      .filter((x) => ids.has(x.id) && x.status === "done" && Array.isArray(x.changed_files))
       .sort((a, b) => a.id.localeCompare(b.id))
-      .map((x) => fs.readFileSync(path.join(mindDir, x.handoff), "utf-8").trim());
-    let text = parts.join("\n\n---\n\n");
-    if (text.length > HANDOFF_CONTEXT_MAX) text = "…(older handoffs trimmed)\n" + text.slice(-HANDOFF_CONTEXT_MAX);
-    return text || "(nothing built yet: this is the first subtask)";
+      .slice(-POINTER_CARDS_MAX)
+      .map((x) => `- ${x.id} ${x.title}: ${x.changed_files.length ? x.changed_files.join(", ") : "(no file changes detected)"}`);
+    if (!rows.length) return "";
+    return `\n\n# FILES CHANGED BY RELATED CARDS (pointers: read these files for what exists now)\n${rows.join("\n")}`;
   }
 
   function goalContext(board, t) {
     const goal = goalOf(board, t);
     if (!goal) return "";
-    return (
-      `\n\n# PART OF A LARGER GOAL (${goal.id}: ${goal.title})\n${goal.goal ?? goal.notes ?? ""}\n\n` +
-      `# WHAT EARLIER SUBTASKS OF THIS GOAL LEFT BEHIND\n${handoffsText(board, goal.id)}`
-    );
+    return `\n\n# PART OF A LARGER GOAL (${goal.id}: ${goal.title})\n${goal.goal ?? goal.notes ?? ""}`;
   }
 
   function parseItems(raw) {
@@ -417,7 +442,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return loadBoard().tasks.find((x) => x.id === id);
   }
 
-  // ── long horizon: subtask creation + handoffs ────────────────────────────
+  // ── long horizon: subtask creation + changed files ───────────────────────
 
   // Turn a wave's SUBTASKS items into linked cards on `board` (caller saves).
   // Every budget and validation rule lives HERE, in code — never trusted to the
@@ -485,6 +510,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       }, "dory")
     );
     created.forEach((t, j) => {
+      t.project = goal.project ?? workDir(cfg) ?? undefined;
       t.parent = goal.id;
       t.wave = wave;
       t.depends_on = [...edges[j].local.map((m) => created[m].id), ...edges[j].ids];
@@ -492,53 +518,53 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return { created, notes };
   }
 
-  // Files under the project changed since `sinceMs`. Uses git's view when the
-  // project is a repo (filtered by mtime, so pre-existing uncommitted edits are
-  // not credited to this run); otherwise an mtime walk. Best-effort, capped.
-  function changedFiles(cwd, sinceMs) {
-    const since = sinceMs - 2000; // filesystem timestamp slack
-    const fresh = (rel) => {
-      try { return fs.statSync(path.join(cwd, rel)).mtimeMs >= since; } catch { return false; }
-    };
-    const git = spawnSync("git", ["-C", cwd, "status", "--porcelain", "-uall"], { encoding: "utf-8", timeout: 10000 });
-    if (git.status === 0) {
-      return git.stdout.split("\n").filter(Boolean)
-        .map((l) => l.slice(3).replace(/^.* -> /, "").replace(/^"|"$/g, ""))
-        .filter(fresh).slice(0, CHANGED_FILES_MAX);
-    }
-    const out = [];
+  // Every project file with its mtime (skipping SKIP_DIRS, .think*). Capped so
+  // a huge tree can't stall the engine.
+  function scanProject(cwd) {
+    const out = {};
     let visited = 0;
     const walk = (dir) => {
       let entries = [];
       try { entries = fs.readdirSync(path.join(cwd, dir), { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
-        if (out.length >= CHANGED_FILES_MAX || ++visited > 5000) return;
+        if (++visited > 20000) return;
         if (e.name.startsWith(".think") || SKIP_DIRS.has(e.name)) continue;
         const rel = dir ? `${dir}/${e.name}` : e.name;
         if (e.isDirectory()) walk(rel);
-        else if (e.isFile() && fresh(rel)) out.push(rel);
+        else if (e.isFile()) { try { out[rel] = fs.statSync(path.join(cwd, rel)).mtimeMs; } catch {} }
       }
     };
     walk("");
     return out;
   }
 
-  // A finished subtask leaves a note for the next ones: the files this run
-  // changed (deterministic) + what the executor said in its HANDOFF block.
-  function writeHandoff(task, out, cwd) {
-    const goalId = task.parent;
+  // Snapshot of the project when a card is claimed for execution, kept on disk
+  // so a restart mid-run can still tell what this card changed.
+  const snapPath = (taskId) => path.join(TMP_DIR, `snap-${taskId}.json`);
+  function snapshotProject(taskId, cwd) {
+    try { fs.writeFileSync(snapPath(taskId), JSON.stringify(scanProject(cwd))); } catch {}
+  }
+
+  // Files this card's run created or modified: compared against the snapshot
+  // taken at claim time (exact — earlier cards' files and pre-existing edits are
+  // never credited). Without a snapshot, fall back to "modified since the card
+  // went in_progress".
+  function changedFiles(cwd, taskId, sinceMs) {
+    const now = scanProject(cwd);
+    let before = null;
+    try { before = JSON.parse(fs.readFileSync(snapPath(taskId), "utf-8")); } catch {}
+    const files = Object.keys(now).filter((rel) => (before ? before[rel] !== now[rel] : now[rel] >= sinceMs));
+    return files.sort().slice(0, CHANGED_FILES_MAX);
+  }
+
+  // A card that passed its test records which files its run changed — the
+  // pointer later related cards follow to the real code.
+  function recordChangedFiles(task, cwd) {
     const startedAt = Date.parse([...(task.history ?? [])].reverse().find((h) => h.to === "in_progress")?.at ?? "") || Date.now() - EXEC_TIMEOUT_MS;
-    const files = cwd ? changedFiles(cwd, startedAt) : [];
-    const said = between(out ?? "", "<<<HANDOFF>>>", ["<<<END>>>"]);
-    const rel = `handoffs/${task.id}.md`;
-    fs.writeFileSync(
-      path.join(mindDir, rel),
-      `# Handoff ${task.id}: ${task.title} (goal ${goalId}, wave ${task.wave ?? "?"})\n\n` +
-        `## Files changed in this run\n${files.length ? files.map((x) => `- ${x}`).join("\n") : "- (none detected)"}\n\n` +
-        `## Executor's notes\n${said || "(no HANDOFF block in the executor's final message)"}\n`
-    );
-    withTask(task.id, (t) => { t.handoff = rel; }, `${task.id} handoff written (dory)`);
-    diary(`${task.id} handoff → ${rel} (${files.length} files)`);
+    const files = cwd ? changedFiles(cwd, task.id, startedAt) : [];
+    try { fs.unlinkSync(snapPath(task.id)); } catch {}
+    withTask(task.id, (t) => { t.changed_files = files; }, `${task.id} changed files recorded (dory)`);
+    diary(`${task.id} changed: ${files.length ? files.join(", ") : "(nothing detected)"}`);
   }
 
   // ── prompt builders (shared by headless + runner modes) ──────────────────
@@ -548,7 +574,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   }
 
   function buildChatPrompt(task) {
-    return `${persona("Chat")}\n\n${cardHeader(task)}`;
+    return `${persona("Chat")}\n\n${cardHeader(task)}${filePointers(loadBoard(), task)}`;
   }
 
   function buildRespondPrompt(task) {
@@ -559,15 +585,16 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     const currentTest = fs.existsSync(path.join(mindDir, `tests/${task.id}.sh`))
       ? fs.readFileSync(path.join(mindDir, `tests/${task.id}.sh`), "utf-8")
       : "(no test written yet)";
-    return `${persona("Revise")}\n\n${cardHeader(task)}\n\n# CURRENT BRIEF\n${currentPlan}\n\n# CURRENT TEST\n${currentTest}`;
+    return `${persona("Revise")}\n\n${cardHeader(task)}\n\n# CURRENT BRIEF\n${currentPlan}\n\n# CURRENT TEST\n${currentTest}${filePointers(loadBoard(), task)}`;
   }
 
   function buildPlanPrompt(task, quick) {
     const quickNote = quick ? "\n\nBE BRIEF: this card was queued for immediate execution — smallest viable plan, but the TEST rules still apply in full." : "";
-    const sub = task.parent
+    const board = loadBoard();
+    const sub = (task.parent
       ? `\n\nTHIS CARD IS A SUBTASK of goal ${task.parent}. It was already split once: answer with BRIEF + TEST only — a GOAL answer is rejected.` +
-        goalContext(loadBoard(), task)
-      : "";
+        goalContext(board, task)
+      : "") + filePointers(board, task);
     return `${persona("Plan")}${quickNote}\n\n${cardHeader(task)}${sub}\n\nUse the id ${task.id} in the brief heading.`;
   }
 
@@ -582,7 +609,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     const subs = subtasksOf(board, task.id).map((x) => `- ${x.id} [${x.status}] wave ${x.wave}: ${x.title}`).join("\n") || "(none yet)";
     return (
       `${persona("Revise goal")}\n\n${cardHeader(task)}\n\n# STATE\n${started ? "RUNNING: the outline is fixed, answer with REPLY only." : "NOT STARTED: the outline may still change."}\n\n` +
-      `# CURRENT GOAL + OUTLINE\n${outline}\n\n# CURRENT GOAL TEST\n${test}\n\n# SUBTASKS\n${subs}`
+      `# CURRENT GOAL + OUTLINE\n${outline}\n\n# CURRENT GOAL TEST\n${test}\n\n# SUBTASKS\n${subs}${filePointers(board, task)}`
     );
   }
 
@@ -597,7 +624,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return (
       `${persona("Wave")}\n\n${cardHeader(goal)}\n\n# GOAL\n${goal.goal ?? goal.notes ?? ""}\n\n# GOAL TEST\n${test}\n\n` +
       `# GOAL TEST OUTPUT NOW (it fails)\n\`\`\`\n${(testOut ?? "").slice(-2500)}\n\`\`\`\n\n` +
-      `# SUBTASKS SO FAR\n${list}\n\n# WHAT THEY LEFT BEHIND\n${handoffsText(board, goal.id)}\n\n` +
+      `# SUBTASKS SO FAR\n${list}${filePointers(board, goal)}\n\n` +
       `# BUDGET\nThis will be wave ${(goal.wave ?? 0) + 1} of at most ${L.max_waves}. You may create at most ${Math.max(room, 0)} subtasks.`
     );
   }
@@ -612,11 +639,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       `If the brief mentions any absolute path outside this directory, IGNORE that location and treat it as this project root instead.\n\n` +
       `${briefContent}\n\n# REQUIREMENTS DISCUSSION (the card's conversation — context and clarifications from the human)\n${renderConversation(task)}${retryNote}\n\n` +
       `When you believe you are done, the acceptance test must pass: ${task.test_cmd}` +
-      (task.parent
-        ? `${goalContext(loadBoard(), task)}\n\n` +
-          `When you are done, END your final message with a handoff for the next subtasks of this goal:\n` +
-          `<<<HANDOFF>>>\nfiles you created/changed, functions/endpoints/commands the next subtasks can use, anything left unfinished\n<<<END>>>`
-        : "")
+      goalContext(loadBoard(), task) + filePointers(loadBoard(), task)
     );
   }
 
@@ -866,7 +889,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   async function handleExecResult(task, out, meta) {
     const cfg = config();
-    const cwd = workDir(cfg);
+    const cwd = projectOf(task, cfg);
     const state = execState.get(task.id) ?? { attempt: 1, lastTestOut: "" };
     const maxAttempts = cfg.max_attempts || DEFAULT_MAX_ATTEMPTS;
     const t = freshTask(task.id);
@@ -876,7 +899,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       execState.delete(task.id);
       withTask(task.id, (x) => applyMove(x, "done", "daemon"), `${task.id} done — acceptance test passed on attempt ${state.attempt} (daemon)`);
       diary(`${task.id} DONE (attempt ${state.attempt}) — test passed`);
-      if (t.parent) writeHandoff(freshTask(task.id) ?? t, out, cwd);
+      recordChangedFiles(freshTask(task.id) ?? t, cwd);
       return;
     }
     diary(`${task.id} attempt ${state.attempt} failed — test exit ${test.code}`);
@@ -885,6 +908,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       return; // next tick dispatches the next attempt
     }
     execState.delete(task.id);
+    try { fs.unlinkSync(snapPath(task.id)); } catch {}
     withTask(task.id, (x) => {
       applyMove(x, "blocked", "daemon");
       x.notes = `${x.notes ?? ""}\n⚠ blocked after ${state.attempt} attempts. Last test output:\n${test.out.slice(-1500)}`.trim();
@@ -902,7 +926,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     }, `${taskId} plan files written (dory)`);
     // Safety net: a plan that references locations outside the project would
     // make the executor build in the wrong place — surface it before approval.
-    const project = workDir(config());
+    const project = projectOf(freshTask(taskId));
     const stray = `${brief}\n${test ?? ""}`.match(/(?:\/Users|\/home|~\/)[^\s"'`)\]]*/g)?.filter(
       (p) => project && !p.replace("~", process.env.HOME ?? "~").startsWith(project) && !p.startsWith(mindDir)
     );
@@ -948,13 +972,30 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   async function dispatch(kind, task, prompt, meta = {}) {
     const cfg = config();
-    const cwd = workDir(cfg);
+    const cwd = projectOf(task, cfg);
     if (!cwd) {
       cooldown.set(`${cooldownKey(kind)}:${task.id}`, Date.now());
-      noteTask(task.id, `${kind} blocked: no project — press ù from your project's Pi session (or set "project_dir" in ${path.join(mindDir, "config.json")})`);
+      noteTask(
+        task.id,
+        task.project
+          ? `${kind} blocked: this card's project folder ${task.project} no longer exists`
+          : `${kind} blocked: no project — press ù from your project's Pi session (or set "project_dir" in ${path.join(mindDir, "config.json")})`
+      );
       return;
     }
-    if (runnerAttached()) {
+    pinProject(task, cwd);
+    // The /dory session works in the CURRENT project (where ù was pressed). A
+    // card pinned to another project must not run there: hold it (or, in
+    // runner_mode auto, run it headless in its own project instead).
+    const current = workDir(cfg);
+    const sameProject = !!current && path.resolve(current) === path.resolve(cwd);
+    if (runnerAttached() && !sameProject && (cfg.runner_mode || "session") === "session") {
+      cooldown.set(`${cooldownKey(kind)}:${task.id}`, Date.now());
+      liveStart(`${activity} → held: ${task.id} belongs to ${cwd}`);
+      noteTask(task.id, `${kind} waiting: this card belongs to ${cwd}, but your /dory session is in ${current ?? "(no project)"}. Press ù in a Pi session in ${cwd} (then /dory) to work on it.`);
+      return;
+    }
+    if (runnerAttached() && sameProject) {
       // Delegate to the attached interactive Pi session: it opens a FRESH
       // session (context reset), runs the job visibly, posts the result back.
       pendingJob = {
@@ -1061,6 +1102,8 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         priority: [1, 2, 3].includes(item.priority) ? item.priority : 3,
       }, "dory")
     );
+    const ingestProject = workDir(cfg);
+    if (ingestProject) for (const t of created) t.project = ingestProject;
     items.forEach((item, i) => {
       if (Array.isArray(item.depends_on)) {
         created[i].depends_on = item.depends_on
@@ -1089,12 +1132,13 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     for (const goal of goals) {
       if (!board.dispatch) return false; // the master switch holds every goal
       if (coolingDown(`goal:${goal.id}`) || coolingDown(`wave:${goal.id}`)) continue;
-      const cwd = workDir(cfg);
+      const cwd = projectOf(goal, cfg);
       if (!cwd) {
         cooldown.set(`goal:${goal.id}`, Date.now());
-        noteTask(goal.id, `goal waiting: no project — press ù from your project's Pi session (or set "project_dir" in config.json)`);
+        noteTask(goal.id, goal.project ? `goal waiting: its project folder ${goal.project} no longer exists` : `goal waiting: no project — press ù from your project's Pi session (or set "project_dir" in config.json)`);
         continue;
       }
+      pinProject(goal, cwd);
 
       // Approved goal → start wave 1 (after checking the goal test isn't already green).
       if (goal.status === "approved") {
@@ -1283,6 +1327,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       // Claim it — re-check the column at claim time (human may have dragged it away).
       if (!withTask(next.id, (x) => x.status === "approved" && applyMove(x, "in_progress", "daemon").ok, `${next.id} approved → in_progress (daemon)`)) return;
       execState.set(next.id, { attempt: 1, lastTestOut: "" });
+      { const p = projectOf(next); if (p) snapshotProject(next.id, p); }
       diary(`executing ${next.id} "${next.title}"`);
       const briefContent = fs.readFileSync(path.join(mindDir, next.brief), "utf-8");
       activity = `executing ${next.id} — attempt 1/${config().max_attempts || DEFAULT_MAX_ATTEMPTS}`;

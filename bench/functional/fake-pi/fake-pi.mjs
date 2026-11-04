@@ -7,7 +7,7 @@
 //
 //   FAKE_PI_SCENARIO=<file.json>   [{ "stage": "plan", "match": "# CARD T-001",
 //                                     "out": "<<<BRIEF>>>…", "files": {"a.txt": "A"} }, …]
-//   FAKE_PI_LOG=<file.jsonl>       one line per call: { stage, prompt, rule }
+//   FAKE_PI_LOG=<file.jsonl>       one line per call: { stage, cwd, prompt, rule }
 //
 // The first unused rule whose stage matches and whose `match` text appears in
 // the prompt is consumed. `files` are written relative to the cwd (the project),
@@ -29,7 +29,7 @@ const used = new Set(fs.existsSync(usedPath) ? JSON.parse(fs.readFileSync(usedPa
 const idx = rules.findIndex((r, i) => !used.has(i) && r.stage === stage && prompt.includes(r.match));
 
 if (process.env.FAKE_PI_LOG) {
-  fs.appendFileSync(process.env.FAKE_PI_LOG, JSON.stringify({ stage, prompt, rule: idx }) + "\n");
+  fs.appendFileSync(process.env.FAKE_PI_LOG, JSON.stringify({ stage, cwd: process.cwd(), prompt, rule: idx }) + "\n");
 }
 
 let out = `(fake-pi: no scripted answer for stage "${stage}")`;

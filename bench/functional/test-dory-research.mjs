@@ -164,7 +164,8 @@ const asked = { research_requested: new Date().toISOString() };
     fs.writeFileSync(path.join(mind, "tasks.json"), JSON.stringify(b));
   }
   const port = 47000 + Math.floor(Math.random() * 900);
-  server = spawn(process.execPath, [path.join(REPO, "organizer/board/server.mjs"), mind], { env: { ...process.env, PORT: String(port) }, stdio: "ignore" });
+  const serverProject = fs.realpathSync(fs.mkdtempSync(path.join(ROOT, "proj-")));
+  server = spawn(process.execPath, [path.join(REPO, "organizer/board/server.mjs"), mind], { env: { ...process.env, PORT: String(port), DORY_PROJECT_DIR: serverProject }, stdio: "ignore" });
   const base = `http://localhost:${port}`;
   const call = async (p, method = "GET", body) => {
     const r = await fetch(base + p, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
@@ -173,6 +174,7 @@ const asked = { research_requested: new Date().toISOString() };
   for (let i = 0; i < 40; i++) { try { await call("/api/board"); break; } catch { await new Promise((r) => setTimeout(r, 150)); } }
   const created = await call("/api/tasks", "POST", { title: "with research", status: "chat", research: true });
   check("S create with research:true → card born with the request", created.status === 201 && created.data.research_requested);
+  check("S a new card is pinned to the project Dory is working in", created.data.project === serverProject);
   const plain = await call("/api/tasks", "POST", { title: "plain", status: "plan_queue" });
   const r1 = await call(`/api/tasks/${plain.data.id}/research`, "POST", {});
   check("S POST /research flags a card in any column (Plan Queue), card stays put", r1.status === 200 && r1.data.research_requested && r1.data.status === "plan_queue");

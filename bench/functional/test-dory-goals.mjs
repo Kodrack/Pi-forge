@@ -4,7 +4,7 @@
 // real goal tests — only the LLM is scripted.
 //
 // Covers: plan → goal outline → approve → wave 1 → just-in-time subtask
-// planning → handoff notes → goal test fails → wave 2 → goal test passes; plus
+// planning → changed-file pointers → goal test fails → wave 2 → goal test passes; plus
 // every budget/validation rule and failure path from organizer/LONG-HORIZON.md,
 // and a regression check that the Plan persona reaches the model whole.
 //
@@ -76,6 +76,10 @@ function makeEnv({ rules, longHorizon = {}, maxAttempts = 2, gitProject = false 
   const dory = createDory({ mindDir: mind, loadBoard, saveBoard, applyMove, createTask });
   const env = {
     mind, project, dory,
+    setConfig: (patch) => {
+      const p = path.join(mind, "config.json");
+      fs.writeFileSync(p, JSON.stringify({ ...JSON.parse(fs.readFileSync(p, "utf-8")), ...patch }));
+    },
     card: (id) => loadBoard().tasks.find((t) => t.id === id),
     tasks: () => loadBoard().tasks,
     calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []),
@@ -106,10 +110,9 @@ const execRule = (match, files, handoff) => ({
 const promptsFor = (env, stage, card) =>
   env.calls().filter((c) => c.stage === stage && c.prompt.includes(stage === "exec" ? `# ${card} —` : `# CARD ${card}:`));
 const firstPrompt = (env, stage, card) => promptsFor(env, stage, card)[0]?.prompt ?? "";
-const readMind = (env, rel) => { try { return fs.readFileSync(path.join(env.mind, rel), "utf-8"); } catch { return ""; } };
 
 // =====================================================================
-// A. Full run: goal → wave 1 (JIT planning, handoffs) → wave 2 → done
+// A. Full run: goal → wave 1 (JIT planning, file pointers) → wave 2 → done
 // =====================================================================
 {
   const E = makeEnv({ rules: [
@@ -155,22 +158,25 @@ const readMind = (env, rel) => { try { return fs.readFileSync(path.join(env.mind
   E.move("T-002", "approved");
   await E.tick();
   check("A4 approved subtask built, its test passed → Done", E.card("T-002").status === "done");
-  const ho = readMind(E, "handoffs/T-002.md");
-  check("A4 handoff note: changed files (mtime walk) + executor's HANDOFF", ho.includes("- a.txt") && ho.includes("use readA()") && E.card("T-002").handoff === "handoffs/T-002.md");
-  check("A4 executor prompt asked for a HANDOFF block", firstPrompt(E, "exec", "T-002").includes("<<<HANDOFF>>>"));
+  check("A4 the card records the files its run changed (snapshot at claim time)", JSON.stringify(E.card("T-002").changed_files) === '["a.txt"]');
+  check("A4 no prose handoff any more: the executor isn't asked for one", !firstPrompt(E, "exec", "T-002").includes("<<<HANDOFF>>>") && !fs.existsSync(path.join(E.mind, "handoffs")));
+  check("A4 the card is pinned to the project it was built in", E.card("T-002").project === E.project && E.card("T-001").project === E.project);
 
   await E.tick();
-  check("A5 T-003 planned once T-002 is done, with T-002's handoff in the prompt",
-    E.card("T-003").status === "plan_created" && firstPrompt(E, "plan", "T-003").includes("use readA()"));
+  check("A5 T-003 planned once T-002 is done, with a pointer to T-002's files",
+    E.card("T-003").status === "plan_created" && firstPrompt(E, "plan", "T-003").includes("FILES CHANGED BY RELATED CARDS") && firstPrompt(E, "plan", "T-003").includes("- T-002 Page A: a.txt"));
   E.move("T-003", "approved");
   await E.tick();
-  check("A5 T-003 built → Done", E.card("T-003").status === "done");
+  check("A5 T-003 built → Done, and its executor got the pointer to a.txt",
+    E.card("T-003").status === "done" && firstPrompt(E, "exec", "T-003").includes("- T-002 Page A: a.txt"));
+  check("A5 T-003 is credited with ONLY its own file (not a.txt, written just before it was claimed)",
+    JSON.stringify(E.card("T-003").changed_files) === '["b.txt"]');
 
   await E.tick();
   g = E.card("T-001");
   const waveCall = E.calls().find((c) => c.stage === "wave");
-  check("A6 wave done + goal test fails → wave job ran with the failing output and handoffs",
-    waveCall && waveCall.prompt.includes("GOAL TEST OUTPUT NOW") && waveCall.prompt.includes("b.txt holds page B"));
+  check("A6 wave done + goal test fails → wave job ran with the failing output and every subtask's files",
+    waveCall && waveCall.prompt.includes("GOAL TEST OUTPUT NOW") && waveCall.prompt.includes("- T-002 Page A: a.txt") && waveCall.prompt.includes("- T-003 Page B: b.txt"));
   check("A6 wave 2 created: T-004, depends on T-003 by id; duplicate 'page a' dropped",
     g.wave === 2 && g.waves_done === 1 && E.card("T-004")?.wave === 2 && JSON.stringify(E.card("T-004").depends_on) === '["T-003"]' && E.tasks().length === 4);
   check("A6 duplicate reported to the human", g.conversation.at(-1).text.includes("dropped duplicate"));
@@ -299,9 +305,10 @@ const readMind = (env, rel) => { try { return fs.readFileSync(path.join(env.mind
   check("I normal card: BRIEF → Plan created, not a goal", E.card("T-001").status === "plan_created" && !E.card("T-001").kind);
   check("I a plain card with an unfinished dependency isn't planned yet (fixes ingest)", promptsFor(E, "plan", "T-002").length === 0);
   E.move("T-001", "approved"); E.dispatch(true); await E.tick();
-  check("I normal card executes and passes, no handoff written", E.card("T-001").status === "done" && !E.card("T-001").handoff);
+  check("I a normal card that passes records its changed files too", E.card("T-001").status === "done" && JSON.stringify(E.card("T-001").changed_files) === '["one.txt"]');
   await E.tick();
-  check("I …then the dependent card gets planned", E.card("T-002").status === "plan_created");
+  check("I …then the dependent card gets planned, with a pointer to one.txt",
+    E.card("T-002").status === "plan_created" && firstPrompt(E, "plan", "T-002").includes("- T-001 First: one.txt"));
 }
 
 // =====================================================================
@@ -316,9 +323,52 @@ const readMind = (env, rel) => { try { return fs.readFileSync(path.join(env.mind
   E.add({ title: "Goal", status: "plan_queue" });
   await E.tick(); E.move("T-001", "approved"); E.dispatch(true); await E.tick(); await E.tick();
   E.move("T-002", "approved"); await E.tick();
-  const ho = readMind(E, "handoffs/T-002.md");
-  check("K git project: handoff lists the new file, not the old uncommitted edit", ho.includes("- new.txt") && !ho.includes("old.txt"));
-  check("K no HANDOFF block from the executor → note says so instead of failing", ho.includes("no HANDOFF block"));
+  check("K git project: changed files list the new file, not the old uncommitted edit", JSON.stringify(E.card("T-002").changed_files) === '["new.txt"]');
+}
+
+// =====================================================================
+// P. Project pinning: a card is only ever worked on in its own project
+// =====================================================================
+{
+  const E = makeEnv({ rules: [
+    briefPlan("# CARD T-001:", "T-001", "true"),
+    briefPlan("# CARD T-002:", "T-002", "true"),
+    briefPlan("# CARD T-003:", "T-003", "true"),
+    briefPlan("# CARD T-004:", "T-004", "true"),
+  ] });
+  const projectA = E.project;
+  const projectB = fs.realpathSync(fs.mkdtempSync(path.join(ROOT, "projB-")));
+  E.add({ title: "A card", status: "plan_queue" });
+  E.patch("T-001", { project: projectA });
+  E.setConfig({ project_dir: projectB });          // ù pressed in another project
+  await E.tick();
+  check("P1 a pinned card runs in ITS project, not the current one", E.calls()[0]?.cwd === projectA && E.card("T-001").status === "plan_created");
+
+  E.add({ title: "legacy card", status: "plan_queue" }); // no project (pre-pinning board)
+  await E.tick();
+  check("P2 an unpinned card adopts the current project on its first job", E.card("T-002").project === projectB && E.calls()[1]?.cwd === projectB);
+
+  E.add({ title: "orphan", status: "plan_queue" });
+  E.patch("T-003", { project: path.join(ROOT, "deleted-project") });
+  await E.tick();
+  check("P3 a card whose project folder is gone isn't run anywhere, human told",
+    E.calls().length === 2 && E.card("T-003").notes.includes("no longer exists"));
+
+  // /dory attached (session runner) while ù points at project B
+  E.setConfig({ runner_mode: "session" });
+  E.patch("T-003", { status: "chat" });              // park the orphan
+  E.add({ title: "A again", status: "plan_queue" });
+  E.patch("T-004", { project: projectA });
+  E.dory.runnerPing();
+  await E.tick();
+  check("P4 /dory session in project B: a project-A card is held, not run in B",
+    E.dory.runnerPoll().job === null && E.card("T-004").notes.includes(`belongs to ${projectA}`));
+  E.setConfig({ project_dir: projectA });
+  E.dory.wake("T-004");
+  E.dory.runnerPing();
+  await E.tick();
+  const job = E.dory.runnerPoll().job;
+  check("P4 …after ù in project A, the job goes to the /dory session", job?.taskId === "T-004" && job.kind === "plan");
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

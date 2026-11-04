@@ -105,6 +105,8 @@
                              border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; white-space: nowrap; }
   #drawer .dhead .research:hover:not(:disabled) { border-color: var(--accent); }
   #drawer .dhead .research:disabled { opacity: .55; cursor: default; }
+  .card .other-project { font-size: 10px; color: var(--warn); }
+  #drawer .dproject { padding: 4px 16px 0; font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
   footer .research-first { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
   #drawer .dhead .close { background: none; border: 0; color: var(--dim);
                    font-size: 18px; cursor: pointer; }
@@ -211,12 +213,14 @@
       <button class="research" id="dResearch" title="Dory searches the web and rewrites this card's title and description with what she finds. The card stays in its column.">🔎 Research</button>
       <button class="close" id="dClose" title="Close">✕</button>
     </div>
+    <div class="dproject" id="dProject"></div>
     <div class="dbody">
       <div id="dNotesWrap"><h3>Notes</h3><pre class="filepre" id="dNotes"></pre></div>
       <h3>Conversation</h3>
       <div class="thread" id="dThread"></div>
       <div id="dPlanWrap"><h3>Plan (brief)</h3><pre class="filepre" id="dPlan"></pre></div>
       <div id="dTestWrap"><h3>Acceptance test</h3><pre class="filepre" id="dTest"></pre></div>
+      <div id="dFilesWrap"><h3>Files changed</h3><pre class="filepre" id="dFiles"></pre></div>
     </div>
     <div class="dfoot">
       <textarea id="dReply" placeholder="Message Dory on this card… (Enter to send, Shift+Enter for newline)"></textarea>
@@ -318,6 +322,7 @@ function render() {
           <span class="prio p${t.priority}">P${t.priority}</span>
           ${goal ? `<span class="goal-badge" title="A big piece of work Dory splits into waves of subtasks">Goal</span>` : ""}
           ${t.research_requested ? `<span title="Dory will web-research this card">🔎</span>` : ""}
+          ${t.project && board.project && t.project !== board.project ? `<span class="other-project" title="This card belongs to ${t.project}: Dory only works on it there (press ù in that project's Pi session)">📁 ${t.project.split("/").filter(Boolean).pop()}</span>` : ""}
           ${t.parent ? `<span class="parent" data-goal="${t.parent}" title="Open the goal this subtask belongs to">↳ ${t.parent}${t.wave ? ` · wave ${t.wave}` : ""}</span>` : ""}
         </div>
         <div class="title"></div>
@@ -399,6 +404,9 @@ async function loadDrawer() {
   catch { closeDrawer(); return; } // deleted
   document.getElementById("dId").textContent = t.id;
   document.getElementById("dTitle").textContent = t.title;
+  document.getElementById("dProject").textContent = t.project ? `project: ${t.project}` : "project: (not pinned yet — the current one is used)";
+  document.getElementById("dFilesWrap").style.display = Array.isArray(t.changed_files) ? "" : "none";
+  document.getElementById("dFiles").textContent = t.changed_files?.length ? t.changed_files.join("\n") : "(no file changes detected)";
   const rb = document.getElementById("dResearch");
   rb.disabled = t.status === "in_progress" || !!t.research_requested;
   rb.textContent = t.research_requested ? "🔎 Researching…" : "🔎 Research";
