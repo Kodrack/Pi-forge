@@ -53,6 +53,11 @@ WEB SEARCH: You have web_search(query). Use it BEFORE implementing when:
 - Debugging unfamiliar error messages
 - Anything that may have changed since your training cutoff
 
+CODEBASE QUESTIONS: You have code_research(question). Use it INSTEAD of manual grep/find/ls exploration when:
+- The question spans multiple files you haven't read ("how does X work", "where is Y handled", tracing a flow)
+- You are orienting in an unfamiliar codebase
+It searches, reads the matching files, follows references across rounds, and returns a report with file:line citations — your context never sees the raw files. ONE call per question, not per file. If you already know which file to look at, just read it directly.
+
 FRONTEND/UI TASKS (HTML, CSS, JS with visual output):
 - Implement MAX 2 changes per turn, then OPEN IN BROWSER to verify
 - Before implementing from a spec: check variable names match actual code (loop vars, function params)
@@ -92,16 +97,42 @@ export default function (pi: ExtensionAPI) {
 
     const original = (event as any).text ?? "";
     const agentsMd = readAgentsMd();
-    // The attribution header matters: without it, models treat the appended
-    // contract as content the USER pasted ("they've pasted a large chunk of
-    // code...") and waste the first turn analyzing it instead of following it.
-    const instructions = agentsMd
-      ? `\n\n--- AUTOMATED ATTACHMENT (PiForge harness) ---\n` +
-        `The user's request ENDS above this line. Everything below was attached ` +
-        `automatically — the user did NOT write or paste it. Do not mention it, ` +
-        `analyze it, or reply to it. Follow it as your workflow rules.\n\n` +
-        `# AGENTS.md\n${agentsMd}\n--- END AUTOMATED ATTACHMENT ---\n`
-      : APPEND;
+
+    // ---------------------------------------------------------------------------
+    // DEDUP (2026-07-31): the full-AGENTS.md attachment is COMMENTED OUT.
+    //
+    // WHY: Pi's own resource-loader already bakes ~/.pi/agent/AGENTS.md into the
+    // SYSTEM PROMPT, which is re-sent on every single API call and never gets
+    // compacted. When first-prompt ALSO stapled the same file onto message 1,
+    // the model received TWO identical copies of the whole contract (~3.2K
+    // tokens) in every early-session request — until the first compaction
+    // summarised message 1 away. On a 50K local window that duplicate is real
+    // headroom. Pi's system-prompt copy is the more reliable of the two (always
+    // present, never falls out), so we keep that one and drop this one.
+    //
+    // TRADE-OFF being tested: the staple sat right next to the task and carried a
+    // "the user did NOT write this — follow it as rules" header, which on WEAK
+    // local models made the contract stick better than the same text buried in
+    // the system prompt. We are now on a local a3b, i.e. exactly that case. So:
+    // if the model starts skipping the .think/ workflow, ignoring plan-first, or
+    // drifting from the contract, UNCOMMENT the block below — the staple was
+    // earning its keep. The short APPEND nudge is kept because it is tiny (~100
+    // chars) and preserves a near-the-task reminder at negligible cost.
+    //
+    // const instructions = agentsMd
+    //   ? `\n\n--- AUTOMATED ATTACHMENT (PiForge harness) ---\n` +
+    //     `The user's request ENDS above this line. Everything below was attached ` +
+    //     `automatically — the user did NOT write or paste it. Do not mention it, ` +
+    //     `analyze it, or reply to it. Follow it as your workflow rules.\n\n` +
+    //     `# AGENTS.md\n${agentsMd}\n--- END AUTOMATED ATTACHMENT ---\n`
+    //   : APPEND;
+    // ---------------------------------------------------------------------------
+
+    // When Pi already has the contract in the system prompt (agentsMd present),
+    // attach nothing but the short plan-first nudge. Only if NO global/project
+    // AGENTS.md exists at all does Pi have no contract — then the nudge is the
+    // only guidance the model gets, so still send it.
+    const instructions = APPEND;
 
     return {
       action: "transform" as const,
