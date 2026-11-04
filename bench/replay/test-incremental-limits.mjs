@@ -20,7 +20,7 @@ const MAX_CHARS_PER_BASH  = parseNumericConst(src, "MAX_CHARS_PER_BASH", FILE);
 requireMarker(src, 'event.toolName === "bash"', FILE, "bash cap branch");
 requireMarker(src, 'event.toolName === "write"', FILE, "write cap branch");
 requireMarker(src, 'event.toolName === "edit"', FILE, "edit cap branch");
-requireMarker(src, "oldLines > MAX_LINES_PER_EDIT * 2", FILE, "whole-file-rewrite-via-edit check");
+requireMarker(src, "oldLines > L.maxLinesPerEdit * 2", FILE, "whole-file-rewrite-via-edit check");
 
 // --- decision logic mirroring the guard ---
 const lineCount = (s) => (s ? s.split(/\r?\n/).length : 0);
