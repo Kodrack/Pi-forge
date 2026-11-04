@@ -43,6 +43,9 @@ const BOARD_URL = `http://localhost:${Number(process.env.DORY_BOARD_PORT || 4747
 // ratio at 3x or more: raising this without raising RUNNER_FRESH_MS reintroduces
 // the detach bug.
 const POLL_MS = 10000;
+// While a job runs, the heartbeat goes every ABORT_CHECK_MS so "Dory paused" on
+// the board stops the model within ~2s (the heartbeat reply carries the abort).
+const ABORT_CHECK_MS = 2000;
 // Runner state lives on DISK, not in this module's closure. ctx.newSession()
 // disposes the current session and builds a fresh ExtensionRunner with freshly
 // constructed extensions, so the instance that dispatched a job is NOT the
@@ -130,6 +133,7 @@ async function api(pathname: string, method = "GET", body?: unknown): Promise<an
 export default function doryMode(pi: ExtensionAPI) {
   let running = false;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let fastTimer: ReturnType<typeof setInterval> | undefined;
   // Any context works for the heartbeat and for pi.sendUserMessage(). Only a
   // COMMAND context can replace the session (newSession), so this is typed loose
   // and feature-detected — a session replacement hands us an event context.
@@ -139,10 +143,14 @@ export default function doryMode(pi: ExtensionAPI) {
 
   function armTimer(): void {
     if (timer) clearInterval(timer);
+    if (fastTimer) clearInterval(fastTimer);
     timer = setInterval(() => {
       void heartbeat();
       void intake();
     }, POLL_MS);
+    fastTimer = setInterval(() => {
+      if (currentJob) void heartbeat(); // fast abort checks only while working
+    }, ABORT_CHECK_MS);
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -173,7 +181,9 @@ export default function doryMode(pi: ExtensionAPI) {
   // job would leave another live poller behind, all racing for the same jobs.
   pi.on("session_shutdown", async () => {
     if (timer) clearInterval(timer);
+    if (fastTimer) clearInterval(fastTimer);
     timer = undefined;
+    fastTimer = undefined;
   });
 
   // Job completion: the agent loop of the delegated job ended — collect the
@@ -232,7 +242,18 @@ export default function doryMode(pi: ExtensionAPI) {
   async function heartbeat(): Promise<void> {
     if (!running) return;
     try {
-      await api("/api/runner/ping", "POST", {});
+      const res = await api("/api/runner/ping", "POST", { job: currentJob?.id ?? null });
+      // "Dory paused" on the board: stop the model NOW. The board already took
+      // the job back (and put an interrupted build back in Approved), so the
+      // aborted run's agent_end must not post anything — clearing currentJob
+      // first makes agent_end a no-op.
+      if (res?.abort && currentJob && res.abort === currentJob.id) {
+        const job = currentJob;
+        currentJob = undefined;
+        writeRunnerState({ running: true });
+        try { currentCtx?.abort?.(); } catch {}
+        currentCtx?.ui?.notify?.(`⏸ Dory paused on the board — stopped ${job.kind} ${job.taskId}`, "warning");
+      }
     } catch {} // board down; next tick retries
   }
 
@@ -316,6 +337,7 @@ export default function doryMode(pi: ExtensionAPI) {
         currentJob = undefined;
         setSharedCmdCtx(undefined);
         if (timer) clearInterval(timer);
+        if (fastTimer) clearInterval(fastTimer);
         writeRunnerState({ running: false });
         ctx.ui.notify("dory runner OFF — this session is yours again", "info");
         return;

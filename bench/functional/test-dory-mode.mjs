@@ -25,18 +25,23 @@ process.env.HOME = TMP;
 fs.mkdirSync(path.join(TMP, ".pi", "organizer"), { recursive: true });
 
 // ---- fake timers: capture setInterval callbacks so the test drives polling ----
-const intervals = [];
-globalThis.setInterval = (fn) => { intervals.push(fn); return intervals.length; };
-globalThis.clearInterval = () => {};
-const pollNow = async () => { for (const fn of intervals.splice(0)) await fn(); await new Promise((r) => setImmediate(r)); };
+const intervals = new Map();
+let intervalId = 0;
+globalThis.setInterval = (fn) => { intervals.set(++intervalId, fn); return intervalId; };
+globalThis.clearInterval = (id) => { intervals.delete(id); };
+// Fire every live timer once (heartbeat, 2s abort check, intake), like time passing.
+const pollNow = async () => { for (const fn of [...intervals.values()]) await fn(); await new Promise((r) => setImmediate(r)); };
 
 // ---- mock board ----
 const jobs = [];                 // queued jobs the board will hand out
+let abortId = null;              // what the board's heartbeat reply says to abort
+const pings = [];
 const results = [];              // posted results
 globalThis.fetch = async (url, opts = {}) => {
   const p = new URL(url).pathname;
   let body = {};
   if (p === "/api/runner/poll") body = { job: jobs.shift() ?? null };
+  else if (p === "/api/runner/ping") { pings.push(JSON.parse(opts.body ?? "{}")); body = { ok: true, abort: abortId }; }
   else if (p === "/api/runner/result") { results.push(JSON.parse(opts.body)); body = { ok: true }; }
   else body = { ok: true };
   return { json: async () => body };
@@ -79,8 +84,9 @@ function commandCtx(name, { stale = false } = {}) {
     newSession: async ({ withSession }) => {
       if (stale) throw new Error("stale context");
       log.push(`newSession(${name})`);
+      await current?.session_shutdown?.({}); // Pi tears the old session down first
       current = instance(`inst${++ctxN}`);
-      await current.session_start({}, { ui, compact: () => log.push(`compact(event${ctxN})`) });
+      await current.session_start({}, { ui, compact: () => log.push(`compact(event${ctxN})`), abort: () => log.push(`abort(event${ctxN})`) });
       await withSession(commandCtx(`fresh${ctxN}`));
       return { cancelled: false };
     },
@@ -131,6 +137,18 @@ jobs.push({ id: "job-5", kind: "exec", taskId: "T-016", prompt: "BUILD T-016" })
 await pollNow();
 await endJob("done, no markers needed");
 check("executor jobs are never nudged (no marker block expected)", results.at(-1).id === "job-5" && sent.filter((s) => s.text.includes("AUTOMATED HARNESS MESSAGE")).length === 2);
+
+// ---- 2b. "Dory paused" on the board → the session aborts the model ----
+jobs.push({ id: "job-p", kind: "exec", taskId: "T-020", prompt: "BUILD T-020" });
+await pollNow();
+const resultsBefore = results.length;
+abortId = "job-p";
+await pollNow();   // the 2s heartbeat while a job runs
+check("heartbeats report which job the session is working on", pings.some((p) => p.job === "job-p"));
+check("board says abort → the session aborts the model (ctx.abort)", log.some((l) => l.startsWith("abort(")));
+await endJob("partial output after abort");
+check("the aborted run's agent_end posts NOTHING (the board already took the job back)", results.length === resultsBefore);
+abortId = null;
 
 // ---- 3. stale shared context → falls back to running in place ----
 globalThis[Symbol.for("piforge.dory-mode.commandContext")] = commandCtx("stale", { stale: true });

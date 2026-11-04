@@ -12,6 +12,7 @@
 // The first unused rule whose stage matches and whose `match` text appears in
 // the prompt is consumed. `files` are written relative to the cwd (the project),
 // which is how a scripted "executor" makes the acceptance test pass.
+// `delayMs` makes the job take that long (to test pausing mid-job).
 // Output is a single assistant message_end event, the shape runPi() parses.
 
 import * as fs from "fs";
@@ -42,5 +43,6 @@ if (idx >= 0) {
     fs.writeFileSync(file, content);
   }
   out = rule.out ?? "";
+  if (rule.delayMs) await new Promise((r) => setTimeout(r, rule.delayMs));
 }
 process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: out }] } }) + "\n");

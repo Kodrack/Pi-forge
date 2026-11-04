@@ -73,6 +73,7 @@ function makeEnv({ rules, longHorizon = {}, maxAttempts = 2, gitProject = false 
     try { return JSON.parse(fs.readFileSync(boardPath, "utf-8")); } catch { return { version: 1, dispatch: false, tasks: [] }; }
   };
   const saveBoard = (b) => fs.writeFileSync(boardPath, JSON.stringify(b, null, 2));
+  saveBoard({ version: 1, dispatch: true, tasks: [] }); // Dory active (paused = no work at all)
   const dory = createDory({ mindDir: mind, loadBoard, saveBoard, applyMove, createTask });
   const env = {
     mind, project, dory,
@@ -139,8 +140,9 @@ const firstPrompt = (env, stage, card) => promptsFor(env, stage, card)[0]?.promp
     firstPrompt(E, "plan", "T-001").includes("Rules for the TEST section") && firstPrompt(E, "plan", "T-001").includes("<<<GOAL>>>"));
 
   E.move("T-001", "approved");
+  E.dispatch(false);
   await E.tick();
-  check("A2 dispatch OFF → approved goal does not start", E.tasks().length === 1);
+  check("A2 Dory paused → approved goal does not start", E.tasks().length === 1);
   E.dispatch(true);
   await E.tick();
   g = E.card("T-001");

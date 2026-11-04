@@ -67,8 +67,15 @@ git-initializing it on first use) and opens the page. Override with
 - Every mutation appends to the task's `history` array (the complete trail)
   and is git-committed when the mind dir is a repo (bursts batch into one
   commit with a combined message).
-- The header toggle sets `dispatch` in `tasks.json` — the master switch the
-  dispatch daemon honors: ON = Dory automatically picks up approved tasks.
+- The header switch (**dory active / dory paused**, `dispatch` in `tasks.json`)
+  is Dory's master switch for ALL work. Active: she answers, researches, plans
+  and builds. **Paused: she stops immediately** — a running job is killed on
+  the spot (a background `pi` and everything it started, or an acceptance/goal
+  test), a job in your `/dory` session is aborted within ~2 s (the session
+  checks the board every 2 s while it works), and an interrupted build goes
+  back to Approved with a note (partial edits may remain; it restarts from
+  attempt 1). Nothing is counted as a failure. While paused, nothing runs at
+  all — not even replies. A new board starts paused.
 - Illegal state transitions are rejected by the server (409 + allowed moves).
 
 API: `GET /api/board` · `POST /api/ingest` · `POST /api/tasks` (with initial

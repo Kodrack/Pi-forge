@@ -14,7 +14,8 @@
 //
 // API:
 //   GET    /api/board                → full tasks.json (+ live dory activity)
-//   POST   /api/dispatch             {on: bool, by?} — master switch the daemon honors
+//   POST   /api/dispatch             {on: bool, by?} — master switch: OFF = Dory paused,
+//                                    stops the running job immediately → {dispatch, stopped}
 //   POST   /api/tasks                {title, status? (chat|plan_queue|approved), priority?, notes?, research?, ...}
 //   POST   /api/tasks/:id/message    {text, by?} — append to the card's conversation
 //   POST   /api/tasks/:id/research   ask Dory to web-research the card (title +
@@ -155,7 +156,7 @@ async function handleApi(req, res, url) {
   // Heartbeat: keeps the runner "attached" while it is busy on a job, without
   // consuming a pending job. Separate from /poll for exactly that reason.
   if (req.method === "POST" && url.pathname === "/api/runner/ping") {
-    return send(res, 200, dory.runnerPing());
+    return send(res, 200, dory.runnerPing(await readBody(req).catch(() => ({}))));
   }
   if (req.method === "GET" && url.pathname === "/api/runner/poll") {
     return send(res, 200, dory.runnerPoll());
@@ -210,8 +211,10 @@ async function handleApi(req, res, url) {
     const board = loadBoard();
     board.dispatch = !!body.on;
     saveBoard(board, `dispatch ${board.dispatch ? "ON" : "OFF"} (${body.by || "human"})`);
+    // Paused means STOP: kill what's running right now, don't wait for a tick.
+    const stopped = board.dispatch ? [] : dory.stop("paused");
     dory.wake();
-    return send(res, 200, { dispatch: board.dispatch });
+    return send(res, 200, { dispatch: board.dispatch, stopped });
   }
 
   if (req.method === "POST" && url.pathname === "/api/tasks") {

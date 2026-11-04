@@ -15,7 +15,12 @@
 //   PLAN    plan_queue cards → browse the target project read-only, write
 //           tasks/T-NNN.md (brief) + tests/T-NNN.sh (acceptance test), post
 //           the plan into the conversation, auto-move → plan_created.
-//   EXECUTE (dispatch ON only) highest-priority approved card with deps done →
+//   PAUSE   the header switch (board.dispatch) is the master switch for ALL work:
+//           paused = no replies, research, planning or building, and flipping
+//           it to paused STOPS the running job at once (stop(): child processes
+//           killed, a /dory job aborted via the heartbeat, an interrupted build
+//           back to Approved — never Blocked, no cooldown).
+//   EXECUTE highest-priority approved card with deps done →
 //           in_progress → PiForge executor session → run acceptance test.
 //           Pass → done. Fail → retry with test output fed back (max_attempts)
 //           → blocked. Bare cards get a quick plan+test at pickup first.
@@ -135,6 +140,21 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   const ingestQueue = [];
   const cooldown = new Map();      // "job:id" → last failure ts
   const execState = new Map();     // taskId → { attempt, lastTestOut }
+
+  // PAUSE = STOP. Every child process (pi jobs, acceptance/goal tests) is
+  // tracked so "Dory paused" can kill it on the spot; stopGen bumps on every
+  // stop so any job awaiting a process knows its result must be discarded.
+  const runningProcs = new Set();
+  let stopGen = 0;
+
+  // Jobs run in their OWN process group (spawn detached) and are stopped as a
+  // group: killing just `bash -c …` or `pi` leaves its children (a test's
+  // `npm test`/`sleep`, pi's tool subprocesses) running and holding the output
+  // pipes open, so the job wouldn't really stop.
+  function killTree(proc, signal) {
+    try { process.kill(-proc.pid, signal); } catch { try { proc.kill(signal); } catch {} }
+  }
+  let abortedRunnerJob = null;     // id of a job the /dory session must abort (sent with the heartbeat)
 
   // Runner delegation state (an interactive Pi session attached via /dory).
   let lastRunnerPoll = 0;
@@ -326,11 +346,14 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       // for code-writing stages (knowledge-injector's selection pass and its
       // write-block). In-session /dory jobs get the same signal from
       // ~/.pi/organizer/dory-runner.json instead, since they share one process.
+      const gen = stopGen;
       const proc = spawn(cfg.pi_bin || "pi", full, {
         cwd,
+        detached: true, // own process group → stop() kills pi AND its children
         stdio: ["ignore", "pipe", "pipe"],
         env: opts.kind ? { ...process.env, DORY_STAGE: opts.kind } : process.env,
       });
+      runningProcs.add(proc);
       let raw = "";
       let buf = "";
       let partialLen = 0;
@@ -383,11 +406,12 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       proc.stderr.on("data", (d) => { raw += d; liveAppend(String(d)); });
 
       const finish = (code, timedOut) => {
+        runningProcs.delete(proc);
         if (buf.trim()) handleLine(buf);
-        resolve({ out: finals.join("\n\n") || raw, code, timedOut });
+        resolve({ out: finals.join("\n\n") || raw, code, timedOut, aborted: gen !== stopGen });
       };
       const timer = setTimeout(() => {
-        proc.kill("SIGKILL");
+        killTree(proc, "SIGKILL");
         finish(-1, true);
       }, timeoutMs);
       proc.on("close", (code) => {
@@ -906,6 +930,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     const t = freshTask(task.id);
     if (!t) { execState.delete(task.id); return; } // deleted mid-run
     const test = await runTest(t, cwd);
+    if (test.aborted) { revertStopped("exec", task.id); return; } // paused during the acceptance test
     if (test.code === 0) {
       execState.delete(task.id);
       withTask(task.id, (x) => applyMove(x, "done", "daemon"), `${task.id} done — acceptance test passed on attempt ${state.attempt} (daemon)`);
@@ -948,20 +973,63 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   function runTest(task, cwd) {
     return new Promise((resolve) => {
-      const proc = spawn("bash", ["-c", task.test_cmd], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const gen = stopGen;
+      const proc = spawn("bash", ["-c", task.test_cmd], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      runningProcs.add(proc);
       let out = "";
       proc.stdout.on("data", (d) => (out += d));
       proc.stderr.on("data", (d) => (out += d));
       const timer = setTimeout(() => {
-        proc.kill("SIGKILL");
-        resolve({ out: out + "\n[test timed out]", code: -1 });
+        killTree(proc, "SIGKILL");
+        runningProcs.delete(proc);
+        resolve({ out: out + "\n[test timed out]", code: -1, aborted: gen !== stopGen });
       }, TEST_TIMEOUT_MS);
       proc.on("close", (code) => {
         clearTimeout(timer);
+        runningProcs.delete(proc);
+        if (gen !== stopGen) return resolve({ out, code: -1, aborted: true });
         liveAppend(`\n── acceptance test exit ${code ?? -1}\n${out.slice(-1500)}\n`);
-        resolve({ out, code: code ?? -1 });
+        resolve({ out, code: code ?? -1, aborted: false });
       });
     });
+  }
+
+  // A stopped job leaves no trace except this: an interrupted build goes back to
+  // Approved (attempt counter reset — it starts clean on resume), never Blocked,
+  // no cooldown. Read-only jobs simply end; their card stays where it is.
+  function revertStopped(kind, taskId) {
+    if (kind !== "exec") return;
+    execState.delete(taskId);
+    try { fs.unlinkSync(snapPath(taskId)); } catch {}
+    const moved = withTask(taskId, (t) => t.status === "in_progress" && applyMove(t, "approved", "dory").ok, `${taskId} paused mid-run → approved (dory)`);
+    if (moved) noteTask(taskId, "paused mid-run: the build was stopped; partial edits may remain in the project. It restarts from attempt 1 when Dory is active again.");
+  }
+
+  // Dory paused → stop EVERYTHING now: kill every child process, take back a
+  // job delivered to the /dory session (it aborts the model on its next
+  // heartbeat, ~2s), and put an interrupted build back in Approved.
+  function stop(reason = "paused") {
+    stopGen++;
+    const stopped = [];
+    for (const proc of runningProcs) {
+      killTree(proc, "SIGTERM");
+      setTimeout(() => killTree(proc, "SIGKILL"), 2000).unref?.();
+    }
+    if (runningProcs.size) stopped.push(`${runningProcs.size} running process(es)`);
+    if (pendingJob) {
+      const job = pendingJob;
+      pendingJob = null;
+      if (job.deliveredAt) abortedRunnerJob = job.id;
+      stopped.push(`${job.kind} ${job.taskId}${job.deliveredAt ? " (in your /dory session)" : ""}`);
+      revertStopped(job.kind, job.taskId);
+    }
+    const label = activity;
+    activity = "";
+    if (stopped.length || label) {
+      liveAppend(`\n■ ${reason} — stopped: ${stopped.join(", ") || label}\n`);
+      diary(`${reason} — stopped ${stopped.join(", ") || label}`);
+    }
+    return stopped;
   }
 
   // ── job dispatch: runner delegation or headless subprocess ────────────────
@@ -1041,6 +1109,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       const pf = promptFile(`${kind}-${task.id}.md`, prompt);
       const isDory = kind !== "exec";
       const res = await runPi(cfg, [...HEADLESS_ARGS[kind](cfg), "-p", `@${pf}`], cwd, TIMEOUTS[kind], { dory: isDory, kind });
+      if (res.aborted) { revertStopped(kind, task.id); return; } // Dory was paused mid-job
       const detail = res.timedOut ? "timeout" : `exit ${res.code}`;
       await HANDLERS[kind](task, res.out, { quick: !!meta.quick, failed: res.timedOut, detail });
     } finally {
@@ -1054,9 +1123,12 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   // The runner has to be able to say "still here" while it is busy, otherwise any
   // job longer than RUNNER_FRESH_MS makes dory conclude the Pi session left and
   // every following job escapes into a headless subprocess.
-  function runnerPing() {
+  function runnerPing(body = {}) {
     lastRunnerPoll = Date.now();
-    return { ok: true, busy: !!(pendingJob && pendingJob.deliveredAt) };
+    // The session reports which job it's working on; once it no longer is, the
+    // abort has been carried out.
+    if (abortedRunnerJob && body.job !== abortedRunnerJob) abortedRunnerJob = null;
+    return { ok: true, busy: !!(pendingJob && pendingJob.deliveredAt), abort: abortedRunnerJob };
   }
 
   function runnerPoll() {
@@ -1159,6 +1231,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         }
         activity = `checking goal test of ${goal.id} before wave 1…`;
         const pre = await runTest(goal, cwd);
+        if (pre.aborted) return true; // paused mid-check: nothing changes
         if (pre.code === 0) {
           withTask(goal.id, (g) => applyMove(g, "blocked", "dory"), `${goal.id} blocked — goal test already passes (dory)`);
           noteTask(goal.id, "the goal test already passes before any work — it doesn't test the goal. Reply with what it should check (I'll revise it), then drag the goal back to Approved.");
@@ -1200,6 +1273,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
       activity = `wave ${goal.wave} of ${goal.id} done — running the goal test…`;
       const test = await runTest(goal, cwd);
+      if (test.aborted) return true; // paused mid-check: nothing changes
       if (test.code === 0) {
         withTask(goal.id, (g) => { g.waves_done = g.wave; applyMove(g, "done", "daemon"); }, `${goal.id} done — goal test passed after wave ${goal.wave} (daemon)`);
         say(goal.id, `Goal reached: the goal test passes after wave ${goal.wave} (${subtasksOf(board, goal.id).length} subtasks).`, `${goal.id} goal reached (daemon)`);
@@ -1226,6 +1300,12 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   }
 
   async function tick() {
+    // Paused: Dory does NOTHING — no replies, research, planning or building.
+    // (A job still in flight when the switch flipped was stopped by stop().)
+    if (!loadBoard().dispatch) {
+      if (pendingJob || runningProcs.size) stop("paused");
+      return;
+    }
     // A delegated job is in flight — enforce its timeout, and if the runner
     // vanished before ever picking it up, hand it back to dispatch(), which
     // decides what that means: held in runner_mode=session, headless in auto.
@@ -1369,6 +1449,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     },
     // Reactive board: a human touching a card (move, message, create) means
     // "react NOW" — clear its failure cooldowns and tick immediately.
+    stop,
     wake: (taskId) => {
       if (taskId) for (const job of ["reply", "plan", "exec", "wave", "goal", "research"]) cooldown.delete(`${job}:${taskId}`);
       setImmediate(() => void tick());

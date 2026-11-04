@@ -51,6 +51,7 @@ function makeEnv(rules) {
   const boardPath = path.join(mind, "tasks.json");
   const loadBoard = () => { try { return JSON.parse(fs.readFileSync(boardPath, "utf-8")); } catch { return { version: 1, dispatch: false, tasks: [] }; } };
   const saveBoard = (b) => fs.writeFileSync(boardPath, JSON.stringify(b, null, 2));
+  saveBoard({ version: 1, dispatch: true, tasks: [] }); // Dory active (paused = no work at all)
   const dory = createDory({ mindDir: mind, loadBoard, saveBoard, applyMove, createTask });
   return {
     mind, dory,
@@ -75,7 +76,7 @@ const asked = { research_requested: new Date().toISOString() };
   const call = E.calls()[0];
   check("R1 research job ran as the read-only 'research' stage", call?.stage === "research");
   check("R1 the Research persona reached the model (button wording + web_search)", call?.prompt.includes('pressed "🔎 Research"') && call.prompt.includes("web_search"));
-  check("R1 dispatch switch OFF didn't stop it (read-only job)", !c.research_requested);
+  check("R1 research ran and the request was cleared", !c.research_requested);
   check("R1 title and description rewritten", c.title === "Add dark mode with CSS prefers-color-scheme" && c.notes.startsWith("Use `prefers-color-scheme`"));
   check("R1 the card stays in its column (Chat)", c.status === "chat" && c.history.length === 1);
   const msg = c.conversation.at(-1);

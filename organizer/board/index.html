@@ -172,7 +172,7 @@
     <div id="spinner" title="Dory is working"></div>
     <span class="mind" id="activity"></span>
     <div class="spacer"></div>
-    <div class="dispatch" id="dispatch" title="When ON, Dory automatically picks up Approved tasks by priority and executes them via PiForge">
+    <div class="dispatch" id="dispatch" title="Dory's master switch. Active: Dory answers, researches, plans and builds. Paused: she stops immediately (a running job is interrupted; a build goes back to Approved) and does nothing until you switch her back on.">
       <span id="dispatchLabel">dory paused</span><div class="pill"></div>
     </div>
   </header>
@@ -467,7 +467,10 @@ async function refresh() {
 
 document.getElementById("dispatch").addEventListener("click", async () => {
   try {
-    await api("/api/dispatch", { method: "POST", body: { on: !board.dispatch, by: "human" } });
+    const r = await api("/api/dispatch", { method: "POST", body: { on: !board.dispatch, by: "human" } });
+    toast(r.dispatch
+      ? "Dory active — picking up work"
+      : r.stopped?.length ? `Dory paused — stopped: ${r.stopped.join(", ")}` : "Dory paused — nothing was running");
   } catch (err) { toast(err.message); }
   refresh();
 });
