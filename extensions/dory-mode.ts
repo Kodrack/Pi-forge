@@ -56,7 +56,33 @@ const RUNNER_STATE_PATH = path.join(os.homedir(), ".pi", "organizer", "dory-runn
 // TITLE-less answer falls back to DESCRIPTION).
 const DELIVERABLE_MARKERS = [["<<<BRIEF>>>", "<<<GOAL>>>"], ["<<<SUBTASKS>>>", "<<<STUCK>>>"], ["<<<TITLE>>>"], ["<<<DESCRIPTION>>>"]];
 
-type RunnerJob = { id: string; kind: string; taskId: string };
+type RunnerJob = { id: string; kind: string; taskId: string; nudged?: boolean };
+
+// The command-capable context Pi hands to newSession()'s withSession callback
+// (a ReplacedSessionContext — it can itself open the NEXT fresh session). It
+// must outlive this module instance: replacing the session disposes this
+// instance, and the next job is picked up by a NEW instance that only ever gets
+// an event context. Without this shared slot every job after the first ran in
+// the same session (compacted), and earlier cards bled into later ones.
+const CMD_CTX_KEY = Symbol.for("piforge.dory-mode.commandContext");
+const sharedCmdCtx = (): any => (globalThis as any)[CMD_CTX_KEY];
+const setSharedCmdCtx = (ctx: any): void => { (globalThis as any)[CMD_CTX_KEY] = ctx; };
+
+// Marker-only jobs and the block that IS their deliverable. If the job's loop
+// ends without one (a small model announcing "let me read X, then deliver" and
+// stopping without the tool call), the model gets ONE more turn to deliver
+// before the result goes back to the board.
+const REQUIRED_MARKERS: Record<string, string[]> = {
+  research: ["<<<DESCRIPTION>>>"],
+  plan: ["<<<BRIEF>>>", "<<<GOAL>>>"],
+  respond: ["<<<REPLY>>>", "<<<BRIEF>>>", "<<<GOAL>>>"],
+  wave: ["<<<SUBTASKS>>>", "<<<STUCK>>>"],
+};
+const DELIVER_NUDGE =
+  "[dory-mode] AUTOMATED HARNESS MESSAGE — not written by the user; act on it.\n" +
+  "Your job ended without its deliverable: the marker block (see the job instructions above) never appeared. " +
+  "Output it NOW, as your final message, from what you have already found — do not announce more reading. " +
+  "If something is missing, say so inside the block. Nothing after <<<END>>>.";
 
 function readRunnerState(): { running: boolean; job?: RunnerJob } {
   try {
@@ -171,6 +197,16 @@ export default function doryMode(pi: ExtensionAPI) {
       )
       .filter((t: string) => t.trim().length > 0)
       .join("\n\n");
+    const required = REQUIRED_MARKERS[job.kind];
+    if (required && !job.nudged && !required.some((m) => output.includes(m))) {
+      // One more turn to deliver. The job stays ours (persisted, in case the
+      // session is replaced underneath us) and its result isn't posted yet.
+      currentJob = { ...job, nudged: true };
+      writeRunnerState({ running: true, job: currentJob });
+      ctx.ui.notify(`dory: ${job.kind} ${job.taskId} ended without its marker block — asking once more`, "warning");
+      pi.sendUserMessage(DELIVER_NUDGE);
+      return;
+    }
     for (const group of DELIVERABLE_MARKERS) {
       const last = Math.max(...group.map((m) => output.lastIndexOf(m)));
       if (last >= 0) {
@@ -223,24 +259,35 @@ export default function doryMode(pi: ExtensionAPI) {
   // context can replace the session:
   //   - command ctx (from /dory, or handed back by withSession): newSession()
   //     gives the hard per-job context purge. Preferred.
-  //   - event ctx only (this instance was created BY a session replacement):
+  //     After a replacement this instance only has an event ctx, so the command
+  //     ctx handed to withSession is kept in a process-wide slot (sharedCmdCtx)
+  //     and used for the next job.
+  //   - no usable command ctx at all (stale, or /dory never ran here):
   //     compact() as a soft purge, then pi.sendUserMessage() — which lives on the
   //     API object, not the context, so it works from any instance. No purge
   //     guarantee, but the job still runs here, in the user's one visible thread.
   async function startJob(job: { id: string; kind: string; taskId: string; prompt: string }): Promise<void> {
-    if (typeof currentCtx?.newSession === "function") {
-      const result = await currentCtx.newSession({
-        withSession: async (fresh: any) => {
-          currentCtx = fresh; // the old ctx is stale after replacement
-          fresh.ui.notify(`🐟 dory ${job.kind} ${job.taskId} — fresh session (context purged)`, "info");
-          await fresh.sendUserMessage(job.prompt);
-        },
-      });
-      if (result?.cancelled) {
-        currentJob = undefined; // user declined; orchestrator times it out
-        writeRunnerState({ running: true });
+    const cmd = typeof currentCtx?.newSession === "function" ? currentCtx : sharedCmdCtx();
+    if (typeof cmd?.newSession === "function") {
+      try {
+        const result = await cmd.newSession({
+          withSession: async (fresh: any) => {
+            currentCtx = fresh;     // the old ctx is stale after replacement
+            setSharedCmdCtx(fresh); // …and the NEXT instance needs it for the next job
+            fresh.ui.notify(`🐟 dory ${job.kind} ${job.taskId} — fresh session (context purged)`, "info");
+            await fresh.sendUserMessage(job.prompt);
+          },
+        });
+        if (result?.cancelled) {
+          currentJob = undefined; // user declined; orchestrator times it out
+          writeRunnerState({ running: true });
+        }
+        return;
+      } catch {
+        // stale context (e.g. the user switched sessions by hand) — forget it and
+        // fall back to running here; the next /dory hands us a fresh one
+        setSharedCmdCtx(undefined);
       }
-      return;
     }
     try {
       currentCtx?.compact?.();
@@ -267,6 +314,7 @@ export default function doryMode(pi: ExtensionAPI) {
       if (arg === "off" || (running && !arg)) {
         running = false;
         currentJob = undefined;
+        setSharedCmdCtx(undefined);
         if (timer) clearInterval(timer);
         writeRunnerState({ running: false });
         ctx.ui.notify("dory runner OFF — this session is yours again", "info");
@@ -281,6 +329,7 @@ export default function doryMode(pi: ExtensionAPI) {
       }
       running = true;
       currentCtx = ctx;
+      setSharedCmdCtx(ctx);
       writeRunnerState({ running: true });
       armTimer();
       ctx.ui.notify(

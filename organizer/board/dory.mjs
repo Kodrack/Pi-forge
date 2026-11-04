@@ -284,8 +284,17 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return task.conversation.map((m) => `${m.by.toUpperCase()}: ${m.text}`).join("\n\n");
   }
 
+  // Notes may reference mind-repo files by their repo-relative path ("PRD:
+  // prd/PRD-001.md", written by ingest). Jobs run in the PROJECT folder, where
+  // that path doesn't exist — the planner reported "the PRD is missing" — so
+  // show it as a full path the job can actually read.
+  function absolutizeMindPaths(text) {
+    return text.replace(/\bPRD: (prd\/PRD-\d+\.md)\b/g, (_m, rel) => `PRD: ${path.join(mindDir, rel)} (the requirements this card comes from — read it)`);
+  }
+
   function cardHeader(task) {
-    return `# CARD ${task.id}: ${task.title}\nPriority P${task.priority}\n\n${task.notes ? `Notes: ${task.notes}\n\n` : ""}# CONVERSATION\n${renderConversation(task)}`;
+    const notes = task.notes ? absolutizeMindPaths(task.notes) : "";
+    return `# CARD ${task.id}: ${task.title}\nPriority P${task.priority}\n\n${notes ? `Notes: ${notes}\n\n` : ""}# CONVERSATION\n${renderConversation(task)}`;
   }
 
   // ── pi subprocess (headless mode) ─────────────────────────────────────────

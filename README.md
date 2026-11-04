@@ -400,7 +400,7 @@ The master layer above the executor: a 7-column, conversation-driven kanban (`ch
 | Extension | What it does | Default |
 |---|---|---|
 | `dory-board.ts` | `ù` (or `/board`) starts the orchestrator (background queue manager) and opens the kanban in the browser. Retargets Dory's project to this session's cwd on every press. Composes with voice-input's editor wrapper | on |
-| `dory-mode.ts` | `/dory` — Dory's tasks run IN THIS Pi session: polls the board for jobs, opens a fresh session per task (hard context purge), runs it visibly with the full PiForge stack, posts the result back to the orchestrator (which parses, test-gates, and moves cards). `/dory off` returns the session | on |
+| `dory-mode.ts` | `/dory` — Dory's tasks run IN THIS Pi session: polls the board for jobs, opens a fresh session for EVERY task (hard context purge — earlier cards never bleed into later ones), runs it visibly with the full PiForge stack, nudges a research/plan/revise/wave job once if it ends without its marker block, posts the result back to the orchestrator (which parses, test-gates, and moves cards). `/dory off` returns the session | on |
 | `dory-plan-guard.ts` | Makes Dory's `research`/`chat`/`plan`/`respond`/`wave` jobs **read-only** in-session — the same restriction headless jobs get from `--tools read,bash,web_search`. Blocks `write`/`edit` and mutating `bash` (redirect, heredoc, `tee`, `rm`/`mv`/`mkdir`, `sed -i`, `git add/commit`, installers), and once the marker block (`<<<TEST>>>`/`<<<END>>>`) has streamed it blocks **every** further tool call: the planner must not implement its own plan. Steers once after 3 blocked attempts so the job can't burn its timeout retrying | on |
 
 #### Dory read-only stages

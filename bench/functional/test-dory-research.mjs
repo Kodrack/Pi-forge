@@ -150,6 +150,16 @@ const asked = { research_requested: new Date().toISOString() };
   check("R6 …then research runs and sees the conversation", E.calls()[1]?.stage === "research" && E.calls()[1].prompt.includes("focus on mobile please") && !E.card(id).research_requested);
 }
 
+// ---- R7: mind-repo paths in notes reach the job as full, readable paths ----
+{
+  const E = makeEnv([{ stage: "research", match: "# CARD T-001:", out: researchOut("Menu", "Menu.") }]);
+  E.add({ title: "Menu section", status: "chat", notes: "Build the menu.\n\nPRD: prd/PRD-001.md" }, asked);
+  await E.tick();
+  const p = E.calls()[0]?.prompt ?? "";
+  check("R7 'PRD: prd/PRD-001.md' (mind-relative) reaches the job as a full path it can read",
+    p.includes(`PRD: ${path.join(E.mind, "prd/PRD-001.md")}`) && !/PRD: prd\//.test(p));
+}
+
 // ---- S: the real server's HTTP endpoint ----
 {
   const mind = path.join(ROOT, "server-mind");

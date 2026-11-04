@@ -179,10 +179,13 @@ item, with priorities and dependencies.
 2. Type **`/dory`** — this session becomes Dory's body: every job from the
    board (chat replies, planning, revisions, executor runs) executes HERE,
    fully visible in your Pi TUI with the whole PiForge stack. Before EVERY
-   task the extension opens a fresh session — a hard context purge — then
-   runs the job and posts the result back to the orchestrator, which parses
-   it, runs acceptance tests, moves cards, commits. `/dory off` returns the
-   session to you.
+   task the extension opens a fresh session — a hard context purge, so one
+   card's context never bleeds into the next — then runs the job and posts
+   the result back to the orchestrator, which parses it, runs acceptance
+   tests, moves cards, commits. If a research/plan/revise/wave job ends
+   without its marker block (a small model announcing "let me read X, then
+   deliver" and stopping), it gets ONE automated nudge to deliver before the
+   result is sent. `/dory off` returns the session to you.
 
 The board server is a pure ORCHESTRATOR: kanban state machine + job queue +
 test gate + git trail. When no Pi session is attached via `/dory`, jobs fall
