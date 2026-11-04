@@ -40,7 +40,12 @@ const TOGGLEABLE = [
   { name: "lmstudio-console",   description: "/lmstudio — list/load/unload models on the LM Studio server (interactive console)" },
 ];
 
-function readConfig(): { disabled: string[] } {
+// piforge.json is this machine's PiForge config: "disabled" plus other sections
+// (e.g. "limits" read by incremental-guard). Always read-modify-write the WHOLE
+// object so toggling an extension never drops the other sections.
+type PiforgeConfig = { disabled: string[]; [section: string]: unknown };
+
+function readConfig(): PiforgeConfig {
   try {
     return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
   } catch {
@@ -48,7 +53,7 @@ function readConfig(): { disabled: string[] } {
   }
 }
 
-function writeConfig(config: { disabled: string[] }) {
+function writeConfig(config: PiforgeConfig) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
 }
 

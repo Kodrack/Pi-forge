@@ -14,7 +14,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
+| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars by default — override per machine in `~/.pi/piforge.json`, see [Per-machine settings](#per-machine-settings-pipiforgejson) (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
 | `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars per block AND 20000 chars cumulative per turn (thinking AND response text channels — the per-turn cap catches dumps split across many small blocks); soft-steers next turn when a thinking block exceeded 15000 chars | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) and auto-continues the session (`triggerTurn`) — Pi's `compact()` aborts the agent loop, so without it the reinjection sits unread until the user types. Auto-continue is withheld when `.think/_state.md` says `Status: complete` or after `MAX_AUTO_CONTINUES` (3) consecutive auto-turns without real user input | on |
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
@@ -406,12 +406,30 @@ Then:
 
 On startup you should see:
 ```
-incremental-guard active (max 100 lines / 6000 chars per write/edit)
+incremental-guard active (write: 100 lines/6000 chars, edit: 60 lines/3000 chars, bash: 100 lines/6000 chars)
 thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
 context-monitor active — warn at 65%, force compact at 80% (window: XXXXX tokens)
 analysis-guard active (triggers on responses >1000 chars with no file write)
 session-manager: session-001 — .think/ ready
 ```
+
+### Per-machine settings (`~/.pi/piforge.json`)
+
+Machine-specific tuning lives in `~/.pi/piforge.json`, never in the repo. The repo's `config/piforge.json` is only the starting template; `install.sh` copies it once and never overwrites an existing file, and `/piforge enable|disable` edits it in place without touching the other sections.
+
+```json
+{
+  "disabled": ["plan-clarify", "explore", "distill-awareness"],
+  "limits": {
+    "incremental-guard": { "maxLinesPerWrite": 200 }
+  }
+}
+```
+
+- `disabled` — extensions switched off on this machine (same list `/piforge` shows).
+- `limits.incremental-guard` — overrides the guard's shipped defaults. Keys: `maxLinesPerWrite` (default 100), `maxCharsPerWrite` (6000), `maxLinesPerEdit` (60), `maxCharsPerEdit` (3000), `maxLinesPerBash` (100), `maxCharsPerBash` (6000). Omitted keys keep their default; values must be positive integers. Read at session start, so `/reload` applies a change. The startup banner lists active overrides, and any key it had to ignore (typo, wrong type) is named in a warning.
+
+Models and the LM Studio host are machine-local too, but they belong to Pi itself: `~/.pi/agent/models.json` and `~/.pi/agent/settings.json` (`install.sh` asks before overwriting those).
 
 ---
 
@@ -550,7 +568,7 @@ piforge/
 ├── config/
 │   ├── models.json                     ← LM Studio provider config template
 │   ├── settings.json                   ← Pi global settings
-│   └── piforge.json                    ← extension toggles (plan-clarify + loop-guard off by default)
+│   └── piforge.json                    ← template for ~/.pi/piforge.json (copied once; per-machine toggles + limits live there)
 └── project-template/
     └── AGENTS.md                       ← installed globally to ~/.pi/agent/AGENTS.md
 ```

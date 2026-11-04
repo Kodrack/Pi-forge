@@ -592,12 +592,19 @@ The model's training to handle errors kicks in, it parses the message, and retri
 
 ### Tuning
 
-Edit `~/.pi/agent/extensions/incremental-guard.ts`:
-- `MAX_LINES_PER_WRITE` / `MAX_LINES_PER_EDIT` — bump up if 80 is too tight for your style
-- `MAX_CHARS_PER_CALL` — for very dense code (minified, no whitespace), the char limit kicks in first
-- `EXEMPT_PATH_PATTERNS` — add file types that should bypass the guard (e.g. `/\.json$/i` for config files you want written wholesale)
+Don't edit the extension to change the limits — the constants at the top of `incremental-guard.ts` are the shipped **defaults**. Override them per machine in `~/.pi/piforge.json`:
 
-After editing, run `/reload` inside Pi (no need to quit).
+```json
+{
+  "disabled": ["plan-clarify"],
+  "limits": { "incremental-guard": { "maxLinesPerWrite": 200 } }
+}
+```
+
+- Keys: `maxLinesPerWrite` (default 100), `maxCharsPerWrite` (6000), `maxLinesPerEdit` (60), `maxCharsPerEdit` (3000), `maxLinesPerBash` (100), `maxCharsPerBash` (6000). Omitted keys keep their default.
+- Values must be positive integers; anything else is ignored and named in a startup warning, so a typo can never silently loosen or disable the guard.
+- Run `/reload` inside Pi to apply (no need to quit). The startup banner lists the active overrides; `/guard` prints the active limits.
+- `EXEMPT_PATH_PATTERNS` (file types that bypass the guard, e.g. `/\.json$/i`) is still edited in the extension itself.
 
 ### Inspecting
 
@@ -958,7 +965,7 @@ Then `/reload` or start fresh session. Adds one turn of latency per planning pha
 
 ## 16. Install piforge-manager extension (toggle system)
 
-`piforge-manager.ts` provides the `/piforge` command for listing and toggling extensions. It reads/writes `~/.pi/piforge.json`.
+`piforge-manager.ts` provides the `/piforge` command for listing and toggling extensions. It reads/writes `~/.pi/piforge.json` — this machine's PiForge settings: the `disabled` toggles plus other sections such as `limits` (see the incremental-guard *Tuning* section). Toggling rewrites only `disabled` and keeps every other section. `install.sh` creates the file only if it doesn't exist yet, so reinstalling never resets your toggles or limits.
 
 **File: `~/.pi/agent/extensions/piforge-manager.ts`**
 
@@ -1143,7 +1150,7 @@ These settings apply per-request (no model reload needed). Change them in LM Stu
    - Context: your `AGENTS.md` (loaded automatically if present in project dir)
    - Extension notifications (all four):
      ```
-     incremental-guard active (max 100 lines / 6000 chars per write/edit)
+     incremental-guard active (write: 100 lines/6000 chars, edit: 60 lines/3000 chars, bash: 100 lines/6000 chars)
      thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
      context-monitor active — warn at 65%, urgent at 80% (window: XXXXX tokens)
      analysis-guard active (triggers on responses >1000 chars with no file write)

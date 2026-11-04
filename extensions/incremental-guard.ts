@@ -14,14 +14,79 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as nodePath from "path";
+import * as os from "os";
 
-// ---------- LIMITS (tune these as needed) ----------
+// ---------- LIMITS (defaults) ----------
+// These are the shipped DEFAULTS. Don't edit them for one machine — put
+// machine-specific values in ~/.pi/piforge.json (machine-local, never in git):
+//   { "limits": { "incremental-guard": { "maxLinesPerWrite": 200 } } }
+// Keys: maxLinesPerWrite, maxCharsPerWrite, maxLinesPerEdit, maxCharsPerEdit,
+//       maxLinesPerBash, maxCharsPerBash. Read at session start, so /reload
+//       picks up a change. Invalid values are ignored and named in the banner.
 const MAX_LINES_PER_WRITE = 100;      // skeleton scaffold cap
 const MAX_LINES_PER_EDIT  = 60;       // single-feature edit cap
 const MAX_CHARS_PER_WRITE = 6000;     // ~1500 tokens for new files
 const MAX_CHARS_PER_EDIT  = 3000;     // ~750 tokens — forces small targeted edits
 const MAX_LINES_PER_BASH  = 100;      // bash heredoc/append chunk cap (mirrors write)
 const MAX_CHARS_PER_BASH  = 6000;     // a >6000-char bash command is always an inline file write
+
+const PIFORGE_CONFIG = nodePath.join(os.homedir(), ".pi", "piforge.json");
+
+interface Limits {
+  maxLinesPerWrite: number;
+  maxCharsPerWrite: number;
+  maxLinesPerEdit: number;
+  maxCharsPerEdit: number;
+  maxLinesPerBash: number;
+  maxCharsPerBash: number;
+}
+
+const DEFAULT_LIMITS: Limits = {
+  maxLinesPerWrite: MAX_LINES_PER_WRITE,
+  maxCharsPerWrite: MAX_CHARS_PER_WRITE,
+  maxLinesPerEdit: MAX_LINES_PER_EDIT,
+  maxCharsPerEdit: MAX_CHARS_PER_EDIT,
+  maxLinesPerBash: MAX_LINES_PER_BASH,
+  maxCharsPerBash: MAX_CHARS_PER_BASH,
+};
+
+// Defaults merged with the machine-local overrides in ~/.pi/piforge.json
+// ("limits" → "incremental-guard"). A missing/unreadable file or section means
+// defaults. Unknown keys and values that aren't positive integers are skipped
+// and reported, never silently half-applied.
+export function loadLimits(configPath: string = PIFORGE_CONFIG): {
+  limits: Limits;
+  overridden: string[];
+  ignored: string[];
+} {
+  const limits: Limits = { ...DEFAULT_LIMITS };
+  const overridden: string[] = [];
+  const ignored: string[] = [];
+  let section: unknown;
+  try {
+    section = JSON.parse(fs.readFileSync(configPath, "utf-8"))?.limits?.["incremental-guard"];
+  } catch {
+    return { limits, overridden, ignored };
+  }
+  if (section === undefined || section === null) return { limits, overridden, ignored };
+  if (typeof section !== "object" || Array.isArray(section)) {
+    ignored.push(`limits.incremental-guard (must be an object)`);
+    return { limits, overridden, ignored };
+  }
+  for (const [key, value] of Object.entries(section as Record<string, unknown>)) {
+    if (!(key in DEFAULT_LIMITS)) {
+      ignored.push(`${key} (unknown key)`);
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+      ignored.push(`${key}=${JSON.stringify(value)} (must be a positive integer)`);
+      continue;
+    }
+    limits[key as keyof Limits] = value;
+    if (value !== DEFAULT_LIMITS[key as keyof Limits]) overridden.push(`${key}=${value}`);
+  }
+  return { limits, overridden, ignored };
+}
 
 // Files exempt from the cap (config files, lockfiles, etc. that legitimately
 // need to be written wholesale). Add more globs here if needed.
@@ -55,16 +120,28 @@ const TRUNCATION_DONE_FRACTION = 0.8;
 
 // ---------- EXTENSION ENTRY POINT ----------
 export default function (pi: ExtensionAPI) {
+  // Active limits — defaults + ~/.pi/piforge.json overrides, refreshed on session_start.
+  let L: Limits = loadLimits().limits;
+
   // path → line count of the biggest oversized write we blocked for it.
   const blockedAttemptLines = new Map<string, number>();
   // paths already warned about (one steer per path per session).
   const truncationWarned = new Set<string>();
 
   pi.on("session_start", async (_event, ctx) => {
+    const loaded = loadLimits();
+    L = loaded.limits;
     ctx.ui.notify(
-      `incremental-guard active (write: ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, edit: ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars, bash: ${MAX_LINES_PER_BASH} lines/${MAX_CHARS_PER_BASH} chars)`,
+      `incremental-guard active (write: ${L.maxLinesPerWrite} lines/${L.maxCharsPerWrite} chars, edit: ${L.maxLinesPerEdit} lines/${L.maxCharsPerEdit} chars, bash: ${L.maxLinesPerBash} lines/${L.maxCharsPerBash} chars)` +
+        (loaded.overridden.length ? ` — overrides from ~/.pi/piforge.json: ${loaded.overridden.join(", ")}` : ""),
       "info"
     );
+    if (loaded.ignored.length) {
+      ctx.ui.notify(
+        `incremental-guard: ignored in ~/.pi/piforge.json limits.incremental-guard: ${loaded.ignored.join("; ")}`,
+        "warning"
+      );
+    }
   });
 
   pi.on("tool_call", async (event, _ctx) => {
@@ -80,12 +157,12 @@ export default function (pi: ExtensionAPI) {
       const lines = lineCount(command);
       const chars = charCount(command);
 
-      if (lines > MAX_LINES_PER_BASH || chars > MAX_CHARS_PER_BASH) {
+      if (lines > L.maxLinesPerBash || chars > L.maxCharsPerBash) {
         return {
           block: true,
           reason:
             `bash rejected: command is ${lines} lines / ${chars} chars ` +
-            `(limit ${MAX_LINES_PER_BASH} lines / ${MAX_CHARS_PER_BASH} chars). ` +
+            `(limit ${L.maxLinesPerBash} lines / ${L.maxCharsPerBash} chars). ` +
             `You are writing a whole file inline — that defeats the incremental workflow. ` +
             `Do NOT retry with the same payload. Instead split the content into MULTIPLE ` +
             `bash calls, each appending one chunk under the limit: ` +
@@ -110,7 +187,7 @@ export default function (pi: ExtensionAPI) {
       const lines = lineCount(content);
       const chars = charCount(content);
 
-      if (lines > MAX_LINES_PER_WRITE || chars > MAX_CHARS_PER_WRITE) {
+      if (lines > L.maxLinesPerWrite || chars > L.maxCharsPerWrite) {
         // Remember the attempted size so we can warn if the "recovery" write
         // leaves the file at a fraction of what the model meant to produce.
         if (path) blockedAttemptLines.set(path, Math.max(lines, blockedAttemptLines.get(path) ?? 0));
@@ -118,10 +195,10 @@ export default function (pi: ExtensionAPI) {
           block: true,
           reason:
             `write rejected: ${lines} lines / ${chars} chars exceeds limit ` +
-            `(${MAX_LINES_PER_WRITE} lines / ${MAX_CHARS_PER_WRITE} chars). ` +
+            `(${L.maxLinesPerWrite} lines / ${L.maxCharsPerWrite} chars). ` +
             `Your ${lines}-line file is NOT lost — you still know what goes in it. Rebuild it in chunks: ` +
             `(1) list every section of those ${lines} lines as a numbered checklist in .think/_plan.md, ` +
-            `(2) 'write' ONLY the first chunk (under ${MAX_LINES_PER_WRITE} lines), ` +
+            `(2) 'write' ONLY the first chunk (under ${L.maxLinesPerWrite} lines), ` +
             `(3) append each remaining chunk with a SEPARATE small bash call: cat >> <file> << 'CHUNK' ... CHUNK, ` +
             `(4) check off each chunk in _plan.md as you append it. ` +
             `The file is NOT DONE until every chunk from your checklist is in it — a fragment that ` +
@@ -150,12 +227,12 @@ export default function (pi: ExtensionAPI) {
       const newLines = lineCount(newS);
       const newChars = charCount(newS);
 
-      if (newLines > MAX_LINES_PER_EDIT || newChars > MAX_CHARS_PER_EDIT) {
+      if (newLines > L.maxLinesPerEdit || newChars > L.maxCharsPerEdit) {
         return {
           block: true,
           reason:
             `edit rejected: replacement is ${newLines} lines / ${newChars} chars ` +
-            `(limit ${MAX_LINES_PER_EDIT} lines / ${MAX_CHARS_PER_EDIT} chars). ` +
+            `(limit ${L.maxLinesPerEdit} lines / ${L.maxCharsPerEdit} chars). ` +
             `Do NOT retry with the same payload. Split this change into multiple ` +
             `smaller 'edit' calls — one feature/section per call. ` +
             `If you're tempted to rewrite a whole file, you're doing it wrong: ` +
@@ -166,7 +243,7 @@ export default function (pi: ExtensionAPI) {
       // Catch the "rewrite the entire file via edit" trick (e.g., old_string
       // is the whole file, new_string is the whole file).
       const oldLines = lineCount(oldS);
-      if (oldLines > MAX_LINES_PER_EDIT * 2) {
+      if (oldLines > L.maxLinesPerEdit * 2) {
         return {
           block: true,
           reason:
@@ -245,10 +322,10 @@ export default function (pi: ExtensionAPI) {
     description: "Show or toggle incremental-guard limits",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        `incremental-guard: write ≤ ${MAX_LINES_PER_WRITE} lines/${MAX_CHARS_PER_WRITE} chars, ` +
-          `edit ≤ ${MAX_LINES_PER_EDIT} lines/${MAX_CHARS_PER_EDIT} chars, ` +
-          `bash ≤ ${MAX_LINES_PER_BASH} lines/${MAX_CHARS_PER_BASH} chars. ` +
-          `Edit ~/.pi/agent/extensions/incremental-guard.ts to change.`,
+        `incremental-guard: write ≤ ${L.maxLinesPerWrite} lines/${L.maxCharsPerWrite} chars, ` +
+          `edit ≤ ${L.maxLinesPerEdit} lines/${L.maxCharsPerEdit} chars, ` +
+          `bash ≤ ${L.maxLinesPerBash} lines/${L.maxCharsPerBash} chars. ` +
+          `Override per machine in ~/.pi/piforge.json → limits.incremental-guard, then /reload.`,
         "info"
       );
     },

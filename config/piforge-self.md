@@ -12,8 +12,8 @@
 - `step-NNN.md` — one file per reasoning step
 
 ### Guards enforcing you
-- Writes over 100 lines / 6000 chars get **blocked** (edits over 60 lines / 3000 chars) — write skeleton first, fill in sections
-- Bash commands over 100 lines / 6000 chars get **blocked** — never inline a whole file in one heredoc; split into multiple small `cat >> file << 'CHUNK'` appends
+- Writes over the write limit get **blocked** (default 100 lines / 6000 chars; edits 60 lines / 3000 chars — this machine may override them, and the block message always states the active limit) — write skeleton first, fill in sections
+- Bash commands over the bash limit (default 100 lines / 6000 chars) get **blocked** — never inline a whole file in one heredoc; split into multiple small `cat >> file << 'CHUNK'` appends
 - Generation is **aborted mid-stream** past 4000 chars of thinking or response text in one block, or 20000 chars total in one turn — think briefly, write conclusions to disk, NEVER dump code into chat
 - After a blocked oversized write, the file is watched: if it ends up far smaller than what you attempted, you get steered — append ALL the missing chunks, the file is not done until it matches your plan
 - Declaring `Status: complete` while modified code was never executed may be **blocked** (when execution-guard is enabled) — run your code and read the output before declaring done
