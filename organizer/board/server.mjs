@@ -1,0 +1,380 @@
+#!/usr/bin/env node
+// organizer/board/server.mjs — kanban board server for the Dory mind repo.
+//
+// Zero dependencies. Serves the board UI (index.html) and a small JSON API
+// over <mind-dir>/tasks.json — the single machine-readable state of the task
+// pipeline. Every mutation is validated against the state machine, appended
+// to the task's history, written to disk, and committed to git when the mind
+// dir is a repo. External edits to tasks.json (Dory intake, the dispatch
+// daemon) are picked up via fs.watch and pushed live to the UI over SSE —
+// ALL writers go through the same file, so the board can never drift.
+//
+// Usage:  node server.mjs [mind-repo-dir]     (default: current directory)
+//         PORT=4747 node server.mjs ~/dev-mind
+//
+// API:
+//   GET    /api/board                → full tasks.json (+ live dory activity)
+//   POST   /api/dispatch             {on: bool, by?} — master switch the daemon honors
+//   POST   /api/tasks                {title, status? (chat|plan_queue|approved), priority?, notes?, ...}
+//   POST   /api/tasks/:id/message    {text, by?} — append to the card's conversation
+//   GET    /api/tasks/:id/detail     → task + plan/test file contents (drawer UI)
+//   POST   /api/tasks/:id/move       {to, by?}   — free movement, in_progress is daemon-only
+//   PATCH  /api/tasks/:id            {title?, priority?, notes?, test_cmd?, depends_on?}
+//   DELETE /api/tasks/:id            removes the task + its brief/test files,
+//                                    strips it from other tasks' depends_on
+//   GET    /api/events               → SSE, fires "changed" on any tasks.json write
+
+import http from "http";
+import fs from "fs";
+import path from "path";
+import { execFile } from "child_process";
+import { fileURLToPath } from "url";
+import { createDory } from "./dory.mjs";
+
+const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MIND_DIR = path.resolve(process.argv[2] || process.cwd());
+const BOARD_PATH = path.join(MIND_DIR, "tasks.json");
+const PORT = Number(process.env.PORT || 4747);
+
+// The 7-column, conversation-driven pipeline. Cards are STATELESS — behavior
+// is defined purely by the column a card sits in (see dory.mjs):
+//   chat         — conversation thread with Dory
+//   plan_queue   — Dory writes plan + acceptance test, auto-moves onward
+//   plan_created — human reviews; feedback in the conversation → Dory revises
+//   approved     — Dory's to-do queue (dispatch ON); bare cards get a quick
+//                  plan+test at pickup
+//   in_progress  — engine-owned while executing
+//   blocked      — attempts exhausted, needs the human
+//   done         — acceptance test passed
+// Humans drag cards anywhere except INTO in_progress (that would claim work
+// nobody is doing); engine moves use by="dory"/"daemon".
+const STATUSES = ["chat", "plan_queue", "plan_created", "approved", "in_progress", "blocked", "done"];
+// Old 5-column boards are migrated on load.
+const STATUS_MIGRATION = { created: "plan_queue", completed: "done" };
+
+// ── board file ──────────────────────────────────────────────────────────────
+
+function loadBoard() {
+  try {
+    const board = JSON.parse(fs.readFileSync(BOARD_PATH, "utf-8"));
+    if (board.dispatch === undefined) board.dispatch = false;
+    // Idempotent migration from the old 5-column schema.
+    for (const t of board.tasks) {
+      if (STATUS_MIGRATION[t.status]) t.status = STATUS_MIGRATION[t.status];
+      if (!Array.isArray(t.conversation)) t.conversation = [];
+    }
+    return board;
+  } catch {
+    // dispatch: master switch the dispatch daemon honors — false = Dory paused,
+    // true = Dory automatically picks up "approved" tasks by priority.
+    return { version: 1, dispatch: false, tasks: [] };
+  }
+}
+
+function saveBoard(board, commitMsg) {
+  board.updated = new Date().toISOString();
+  fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2) + "\n");
+  gitCommit(commitMsg);
+}
+
+// Commits are serialized and batched: `git add` always stages the file's
+// LATEST content, so a burst of mutations collapses into one commit — batching
+// the pending messages keeps that one commit message accurate. The complete
+// per-mutation trail lives in each task's `history` array regardless.
+let pendingMsgs = [];
+let committing = false;
+function gitCommit(msg) {
+  pendingMsgs.push(msg);
+  if (committing) return;
+  committing = true;
+  void drainCommits();
+}
+async function drainCommits() {
+  while (pendingMsgs.length) {
+    const message = `board: ${pendingMsgs.splice(0).join("; ")}`;
+    await new Promise((resolve) => {
+      // -A: Dory also writes prd/, tasks/, tests/, diary/ (.dory-tmp is gitignored)
+      execFile("git", ["-C", MIND_DIR, "add", "-A"], (err) => {
+        if (err) return resolve(); // not a git repo — board still works, just no history
+        execFile("git", ["-C", MIND_DIR, "commit", "-m", message, "--no-gpg-sign"], () => resolve());
+      });
+    });
+  }
+  committing = false;
+}
+
+function nextId(board) {
+  const max = board.tasks.reduce((m, t) => Math.max(m, Number(t.id.replace(/\D/g, "")) || 0), 0);
+  return `T-${String(max + 1).padStart(3, "0")}`;
+}
+
+// Shared by the HTTP API and the Dory engine — one code path for mutations.
+// Cards are stateless, so movement is free — the only restriction is that
+// nobody but the daemon may claim a card as in_progress.
+function applyMove(task, to, by) {
+  if (!STATUSES.includes(to)) return { error: `unknown status "${to}"` };
+  if (to === task.status) return { ok: true };
+  if (to === "in_progress" && by !== "daemon") {
+    return { error: `only the daemon moves cards into in_progress — drop it in "approved" and turn dispatch on`, allowed: STATUSES.filter((s) => s !== "in_progress") };
+  }
+  const now = new Date().toISOString();
+  task.history.push({ at: now, from: task.status, to, by });
+  task.status = to;
+  task.updated = now;
+  return { ok: true };
+}
+
+// Columns a card may be born in: a chat thread, straight to planning, or
+// straight to the execution queue ("I need this done quickly").
+const CREATABLE_IN = ["chat", "plan_queue", "approved"];
+
+function createTask(board, fields, by) {
+  const now = new Date().toISOString();
+  const status = CREATABLE_IN.includes(fields.status) ? fields.status : "chat";
+  const task = {
+    id: nextId(board),
+    title: String(fields.title).trim(),
+    status,
+    priority: Number(fields.priority) || 3,
+    notes: fields.notes || "",
+    test_cmd: fields.test_cmd || "",
+    depends_on: Array.isArray(fields.depends_on) ? fields.depends_on : [],
+    brief: fields.brief || "", // path to tasks/T-NNN.md once Dory planned it
+    conversation: [],          // {at, by: "human"|"dory", text}
+    created: now,
+    updated: now,
+    history: [{ at: now, from: null, to: status, by }],
+  };
+  board.tasks.push(task);
+  return task;
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => {
+      data += c;
+      if (data.length > 1e6) reject(new Error("body too large"));
+    });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+  });
+}
+
+function send(res, code, obj) {
+  const body = JSON.stringify(obj, null, 2);
+  res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+  res.end(body);
+}
+
+// ── SSE ─────────────────────────────────────────────────────────────────────
+
+const sseClients = new Set();
+let watchDebounce;
+
+function broadcastChange() {
+  for (const res of sseClients) res.write(`data: changed\n\n`);
+}
+
+function watchBoard() {
+  // Watch the directory, not the file — editors and atomic writers replace
+  // the file (rename), which kills a direct file watch.
+  fs.watch(MIND_DIR, (_event, filename) => {
+    if (filename !== "tasks.json") return;
+    clearTimeout(watchDebounce);
+    watchDebounce = setTimeout(broadcastChange, 150);
+  });
+}
+
+// ── request handling ────────────────────────────────────────────────────────
+
+async function handleApi(req, res, url) {
+  const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
+
+  if (req.method === "GET" && url.pathname === "/api/board") {
+    return send(res, 200, { ...loadBoard(), activity: dory.activity(), project: dory.projectDir() });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/live") {
+    return send(res, 200, dory.live());
+  }
+
+  // Runner protocol — an interactive Pi session attached via /dory polls for
+  // jobs and posts results; the engine is then a pure orchestrator.
+  // Heartbeat: keeps the runner "attached" while it is busy on a job, without
+  // consuming a pending job. Separate from /poll for exactly that reason.
+  if (req.method === "POST" && url.pathname === "/api/runner/ping") {
+    return send(res, 200, dory.runnerPing());
+  }
+  if (req.method === "GET" && url.pathname === "/api/runner/poll") {
+    return send(res, 200, dory.runnerPoll());
+  }
+  if (req.method === "POST" && url.pathname === "/api/runner/result") {
+    const body = await readBody(req);
+    return send(res, 200, await dory.runnerResult(body));
+  }
+
+  // Retarget Dory's project — dory-board.ts calls this on every ù press with
+  // the Pi session's cwd, so Dory works on "the project where I typed pi".
+  if (req.method === "POST" && url.pathname === "/api/config") {
+    const body = await readBody(req);
+    const cfgPath = path.join(MIND_DIR, "config.json");
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")); } catch {}
+    if (body.project_dir !== undefined) {
+      if (typeof body.project_dir !== "string" || (body.project_dir && !fs.existsSync(body.project_dir))) {
+        return send(res, 400, { error: `project_dir does not exist: ${body.project_dir}` });
+      }
+      cfg.project_dir = body.project_dir;
+    }
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+    gitCommit(`config: project_dir → ${cfg.project_dir || "(unset)"}`);
+    dory.wake(); // retarget = react now (clears nothing, just ticks)
+    return send(res, 200, cfg);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/ingest") {
+    const body = await readBody(req);
+    if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
+      return send(res, 400, { error: "text required" });
+    }
+    dory.enqueueIngest(body.text);
+    return send(res, 202, { queued: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write("data: connected\n\n");
+    sseClients.add(res);
+    req.on("close", () => sseClients.delete(res));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/dispatch") {
+    const body = await readBody(req);
+    const board = loadBoard();
+    board.dispatch = !!body.on;
+    saveBoard(board, `dispatch ${board.dispatch ? "ON" : "OFF"} (${body.by || "human"})`);
+    dory.wake();
+    return send(res, 200, { dispatch: board.dispatch });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/tasks") {
+    const body = await readBody(req);
+    if (!body.title || typeof body.title !== "string") return send(res, 400, { error: "title required" });
+    const board = loadBoard();
+    const task = createTask(board, body, body.by || "human");
+    saveBoard(board, `${task.id} created (${task.history[0].by})`);
+    dory.wake(task.id);
+    return send(res, 201, task);
+  }
+
+  // /api/tasks/:id/move  and  /api/tasks/:id
+  if (parts[1] === "tasks" && parts[2]) {
+    const board = loadBoard();
+    const task = board.tasks.find((t) => t.id === parts[2]);
+    if (!task) return send(res, 404, { error: `unknown task ${parts[2]}` });
+
+    if (req.method === "POST" && parts[3] === "message") {
+      const body = await readBody(req);
+      if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
+        return send(res, 400, { error: "text required" });
+      }
+      const now = new Date().toISOString();
+      task.conversation.push({ at: now, by: body.by === "dory" ? "dory" : "human", text: body.text.trim() });
+      task.updated = now;
+      saveBoard(board, `${task.id} message (${body.by || "human"})`);
+      dory.wake(task.id);
+      return send(res, 200, task);
+    }
+
+    if (req.method === "GET" && parts[3] === "detail") {
+      const read = (rel) => {
+        try { return fs.readFileSync(path.join(MIND_DIR, rel), "utf-8"); } catch { return null; }
+      };
+      return send(res, 200, {
+        ...task,
+        plan_content: task.brief ? read(task.brief) : null,
+        test_content: read(`tests/${task.id}.sh`),
+      });
+    }
+
+    if (req.method === "POST" && parts[3] === "move") {
+      const body = await readBody(req);
+      const prevStatus = task.status;
+      const result = applyMove(task, body.to, body.by || "human");
+      if (result.error) return send(res, result.allowed ? 409 : 400, result);
+      if (task.status !== prevStatus) {
+        saveBoard(board, `${task.id} ${prevStatus} → ${task.status} (${body.by || "human"})`);
+        dory.wake(task.id);
+      }
+      return send(res, 200, task);
+    }
+
+    if (req.method === "DELETE" && !parts[3]) {
+      board.tasks = board.tasks.filter((t) => t.id !== task.id);
+      // Drop dangling dependency references and Dory's files for this task.
+      for (const t of board.tasks) {
+        if (Array.isArray(t.depends_on)) t.depends_on = t.depends_on.filter((id) => id !== task.id);
+      }
+      for (const rel of [`tasks/${task.id}.md`, `tests/${task.id}.sh`]) {
+        try { fs.unlinkSync(path.join(MIND_DIR, rel)); } catch {}
+      }
+      saveBoard(board, `${task.id} deleted (${url.searchParams.get("by") || "human"})`);
+      return send(res, 200, { deleted: task.id });
+    }
+
+    if (req.method === "PATCH" && !parts[3]) {
+      const body = await readBody(req);
+      for (const key of ["title", "priority", "notes", "test_cmd", "depends_on", "brief"]) {
+        if (body[key] !== undefined) task[key] = key === "priority" ? Number(body[key]) || task.priority : body[key];
+      }
+      task.updated = new Date().toISOString();
+      saveBoard(board, `${task.id} edited`);
+      return send(res, 200, task);
+    }
+  }
+
+  send(res, 404, { error: "not found" });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  try {
+    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      const html = fs.readFileSync(path.join(UI_DIR, "index.html"));
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(html);
+    }
+    send(res, 404, { error: "not found" });
+  } catch (err) {
+    send(res, 500, { error: String(err.message ?? err) });
+  }
+});
+
+if (!fs.existsSync(BOARD_PATH)) saveBoard({ version: 1, tasks: [] }, "initialize empty board");
+
+// The Dory engine runs inside this process: ingest + intake whenever work is
+// queued, execution only while the board's dispatch toggle is ON. The poll is
+// cheap (no-op when idle) and tick() never overlaps itself.
+const dory = createDory({ mindDir: MIND_DIR, loadBoard, saveBoard, applyMove, createTask });
+const DORY_POLL_MS = 5000;
+setInterval(() => void dory.tick(), DORY_POLL_MS);
+
+watchBoard();
+server.listen(PORT, () => {
+  console.log(`dory board — mind dir: ${MIND_DIR}`);
+  console.log(`open http://localhost:${PORT}`);
+});
