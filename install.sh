@@ -48,6 +48,16 @@ echo "    cp -r $PIFORGE_DIR/knowledge/ <your-project>/knowledge/"
 cp "$PIFORGE_DIR/skills/incremental-codegen/SKILL.md" "$PI_DIR/skills/incremental-codegen/SKILL.md"
 echo "✓ Skill installed: incremental-codegen"
 
+# ---------- 5a. Dory board + engine ----------
+# dory-board.ts auto-starts the board server from ~/.pi/organizer/board/
+mkdir -p "$HOME/.pi/organizer/board"
+cp "$PIFORGE_DIR/organizer/board/server.mjs" "$HOME/.pi/organizer/board/server.mjs"
+cp "$PIFORGE_DIR/organizer/board/index.html" "$HOME/.pi/organizer/board/index.html"
+cp "$PIFORGE_DIR/organizer/board/dory.mjs" "$HOME/.pi/organizer/board/dory.mjs"
+cp "$PIFORGE_DIR/organizer/dory-persona.md" "$HOME/.pi/organizer/dory-persona.md"
+cp "$PIFORGE_DIR/organizer/dory-console.sh" "$HOME/.pi/organizer/dory-console.sh"
+echo "✓ Dory board + engine installed: ~/.pi/organizer/ (press ù, or run dory-console.sh in a terminal)"
+
 # ---------- 5b. Global AGENTS.md (workflow contract) ----------
 # Pi loads ~/.pi/agent/AGENTS.md natively as a GLOBAL context file in every
 # project, before any project-local AGENTS.md. The PiForge workflow contract

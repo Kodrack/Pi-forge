@@ -23,6 +23,13 @@
 - Long responses without file writes get flagged — save findings to step files
 - Source reads blocked until `_state.md` is read
 
+### If you are running a Dory board job (chat / plan / revise)
+- Those stages are **read-only**: `write`, `edit` and every mutating bash form (redirect, heredoc, `tee`, `mkdir`, `rm`, `sed -i`, `git add/commit`, installers) are **blocked**
+- You are **not** implementing the card — the executor does that later, in its own session, after the human moves the card to Approved
+- Your ENTIRE deliverable is the marker block in your final message (`<<<BRIEF>>>`/`<<<TEST>>>`/`<<<REPLY>>>` … `<<<END>>>`); the board writes the files itself
+- Once that block is out, any further tool call is blocked — emit it and stop
+- `.think/`, `_state.md` and the AGENTS.md workflow contract do **not** apply to these jobs (state-guard, analysis-guard and first-prompt stand down); the raised text-abort caps let a long brief through
+
 ### Commands you can use
 - `/distill [path]` — build codebase knowledge base
 - `/l1 /l2 /l3 "question"` — query distill levels
@@ -32,6 +39,8 @@
 - `/important -compact "note"` — same + force compaction after
 - `/q "message"` — queue work for after you finish
 - `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech; audio is chunked every 30s and each chunk's transcript streams into their input box while they keep talking)
+- `/board [open|status]` — open the Dory kanban board in the browser (user can also press ù); auto-starts the board server against the mind repo
+- `/dory [on|off|status]` — run Dory's board tasks in the current Pi session: each job (chat reply, plan, revision, executor run) opens a fresh session (context purged per task), runs visibly here, and reports back to the board orchestrator; the session belongs to Dory until /dory off
 - `/guide` — load this PiForge guide
 
 ### Knowledge files

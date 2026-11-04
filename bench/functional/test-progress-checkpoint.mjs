@@ -151,6 +151,14 @@ const setState = (s) => fs.writeFileSync(path.join(PROJ, ".think", "_state.md"),
   check("bash append into code counts as progress → no checkpoint", h.steers.length === 0);
 }
 
+// ---- Dory owns its own loop: guard must be inert ----
+{
+  process.env.DORY_STAGE = "exec";
+  const { handlers } = harness();
+  check("Dory job → no handlers registered (inert)", Object.keys(handlers).length === 0);
+  delete process.env.DORY_STAGE;
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 
 let failed = 0;

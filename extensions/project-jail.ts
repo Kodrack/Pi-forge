@@ -11,11 +11,11 @@
 //     outside the project root AND contain a mutating/relocating token
 //     (redirection, mkdir, cp, mv, rm, touch, tee, ln, sed -i, git init/clone,
 //     npm/npx create, cd). Reading/executing outside files stays allowed —
-//     e.g. `bash ~/shared/tests/T-001.sh` runs fine.
+//     e.g. `bash ~/dev-mind/tests/T-001.sh` runs fine.
 //
-// Side effect worth knowing: a test suite kept outside the project (a shared
-// spec repo, say) becomes read-only to the session — it can run those tests but
-// physically cannot rewrite them, so the pass/fail contract cannot be gamed.
+// Side effect worth knowing: the Dory mind repo (~/dev-mind) lies outside every
+// project, so executor sessions physically cannot rewrite Dory's acceptance
+// tests or tasks.json — the master/executor test contract is enforced here.
 //
 // Toggleable: /piforge disable project-jail
 // Install: copy to ~/.pi/agent/extensions/project-jail.ts

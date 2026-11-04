@@ -21,6 +21,7 @@ requireMarker(src, "COMPLETE_STATUS.test(newContent)", FILE, "completion-status 
 requireMarker(src, "await runAcceptance(ctx.cwd)", FILE, "harness (not model) runs the oracle");
 requireMarker(src, "result.code === 0", FILE, "exit code decides completion");
 requireMarker(src, "blocksThisSession >= MAX_BLOCKS_PER_SESSION", FILE, "give-up safety valve");
+requireMarker(src, "if (isDoryJob()) return;", FILE, "Dory isolation (dory.mjs owns its own oracle)");
 requireMarker(src, "CALL time as well as result time", FILE, "call-time arming (parallel tool calls)");
 requireMarker(src, "do NOT edit the test to make it pass", FILE, "anti-cheat instruction in block reason");
 

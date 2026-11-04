@@ -37,7 +37,7 @@
 // input editor via ctx.ui.setEditorComponent/CustomEditor and intercepts the
 // raw character in handleInput. Consequence: you can no longer TYPE è into the
 // prompt (paste still works, and é/shift is unaffected). Composes with other
-// extensions that wrap the editor the same way, whatever the load order.
+// extensions that wrap the editor the same way (e.g. dory-board's ù).
 //
 // CROSS-PLATFORM RECORDING (auto-detected from os.platform()):
 //   macOS   — ffmpeg -f avfoundation, device ":<index>". ffmpeg auto-installed
@@ -663,8 +663,8 @@ export default function voiceInput(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isEnabled()) return;
-    // Compose with any editor factory another extension installed, so every
-    // raw-char trigger keeps working regardless of load order.
+    // Compose with any editor factory another extension installed (dory-board),
+    // so both raw-char triggers work regardless of load order.
     const prev = ctx.ui.getEditorComponent();
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       const editor = prev ? prev(tui, theme, keybindings) : new CustomEditor(tui, theme, keybindings);

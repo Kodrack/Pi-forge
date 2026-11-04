@@ -23,6 +23,30 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
+// Dory stages that produce marker text only — no code, no .think/ brain files.
+// Kinds dispatched by dory.mjs: chat | respond | plan | exec.
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+
+// The Dory stage this session is executing (null = not a read-only Dory job).
+// DORY_STAGE (env) for headless `pi -p` jobs, dory-runner.json for in-session
+// /dory jobs (dory-mode.ts cannot set env vars on its own process) — honored only
+// when `pid` matches, since that file is one global slot shared by every Pi
+// process on the machine. See dory-plan-guard.ts, which enforces read-only there.
+function doryReadonlyStage(): string | null {
+  let kind: string | null = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (!kind) {
+    try {
+      const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+      kind = state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+    } catch {
+      kind = null;
+    }
+  }
+  return kind !== null && DORY_READONLY_KINDS.includes(kind) ? kind : null;
+}
+
 // The PiForge workflow contract lives at ~/.pi/agent/AGENTS.md
 // (copied there by install.sh, symlinked to the repo by dev-link.sh).
 // A project-local AGENTS.md is optional, holds project-specific rules, and is
@@ -162,9 +186,19 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // WARN threshold — fires once.
+    // WARN threshold — fires once. Skipped in read-only dory stages: the warning
+    // is an order to write .think/_state.md + _summary.md, and those jobs have no
+    // .think/ workflow and are forbidden from touching files.
     if (pct >= WARN_PERCENT && !warnFired) {
       warnFired = true;
+      const doryStage = doryReadonlyStage();
+      if (doryStage) {
+        ctx.ui.notify(
+          `context-monitor: ${Math.round(pct)}% — skipping the .think/ write steer (dory ${doryStage} job)`,
+          "info",
+        );
+        return;
+      }
 
       ctx.ui.notify(
         `context-monitor: context at ${Math.round(pct)}% — steering model to write .think/ state files now.`,
@@ -191,6 +225,20 @@ export default function (pi: ExtensionAPI) {
   // compaction, the condensed digest otherwise.
   pi.on("session_compact", async (_event, ctx) => {
     compactionCount++;
+    // Read-only dory stage: do NOT re-inject the workflow contract. AGENTS.md is
+    // the code-writing contract ("YOU MUST create .think/_state.md BEFORE doing
+    // anything else"), and a chat/plan/respond job prompt says the opposite
+    // ("Never create or modify any file"). Injecting both hands the model two
+    // contradictory assignments and it spends the rest of the job reconciling
+    // them. purpose-anchor re-anchors these jobs on their own prompt instead.
+    const doryStage = doryReadonlyStage();
+    if (doryStage) {
+      ctx.ui.notify(
+        `context-monitor: compaction #${compactionCount} — AGENTS.md NOT re-injected (dory ${doryStage} job; purpose-anchor re-anchors it)`,
+        "info",
+      );
+      return;
+    }
     const globalMd = readGlobalAgentsMd();
     const projectMd = readProjectAgentsMd();
     // No global install? The project file acts as the contract (legacy setups).

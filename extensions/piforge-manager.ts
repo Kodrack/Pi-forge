@@ -34,7 +34,10 @@ const TOGGLEABLE = [
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
   { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
   { name: "voice-input",        description: "Push-to-talk voice input (è key), local STT via parakeet or moonshine" },
+  { name: "dory-board",         description: "Open the Dory kanban board in the browser (ù key or /board), auto-starts the server" },
   { name: "project-jail",       description: "Blocks file mutations outside the project root (cwd) — write/edit/bash confined to the project" },
+  { name: "dory-mode",          description: "/dory — turn this Pi session into Dory (persona + dory_board tool for the kanban)" },
+  { name: "dory-plan-guard",    description: "Keeps Dory's chat/plan/respond jobs read-only and stops them once the marker block is out" },
 ];
 
 function readConfig(): { disabled: string[] } {

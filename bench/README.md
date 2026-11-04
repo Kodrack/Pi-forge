@@ -26,8 +26,10 @@ decision logic. Milliseconds, run them on every guard edit.
 | `replay/test-incremental-limits.mjs` | write/edit/bash size caps block and allow the right payloads (incl. the heredoc side door and the whole-file-rewrite-via-edit trick) |
 | `replay/test-loop-guard-write.mjs` | consecutive-write similarity warns at 4 and blocks at 6 identical writes, with zero false positives on legit evolving `_state.md` updates |
 | `replay/test-loop-guard-text.mjs` | thinking-aware `extractText` sees the narration a thinking model puts in `thinking` blocks; warn/recover fire at the documented repeat counts |
+| `replay/test-thinking-guard-turncap.mjs` | per-block and cumulative per-turn aborts fire on the recorded 21k–30k-char dumps; Dory's raised text caps let a brief through while the thinking channel stays strict |
 | `replay/test-execution-guard.mjs` | `Status: complete` is blocked while modified code was never executed; any execution releases the latch; doc-only sessions never arm |
 | `replay/test-acceptance-guard.mjs` | `Status: complete` is blocked unless `.think/_acceptance.sh` exits 0; a fixed cause is allowed on retry; doc-only sessions never arm; the give-up valve hands back after 3 blocks |
+| `replay/test-dory-plan-guard.mjs` | Dory's chat/plan/respond jobs stay read-only (every write side door blocked, read-only browsing untouched) and every tool call after the marker block is blocked — replays the T-006 "planner started implementing" drift |
 
 **Staying honest against the real source:** Node can't import the `.ts`
 extensions directly, so the tests copy the small pure functions — but all
@@ -60,7 +62,7 @@ test and it can't cover streaming, but it cannot drift from the shipped code.
 
 | Test | What it proves |
 |---|---|
-| `functional/test-acceptance-guard.mjs` | the guard actually spawns `.think/_acceptance.sh`, blocks on a real nonzero exit with the real output in `block.reason`, allows a real exit 0, catches a test that passes pre-implementation, caps its own blocks |
+| `functional/test-acceptance-guard.mjs` | the guard actually spawns `.think/_acceptance.sh`, blocks on a real nonzero exit with the real output in `block.reason`, allows a real exit 0, catches a test that passes pre-implementation, caps its own blocks, and registers zero handlers inside a Dory job |
 | `functional/test-progress-checkpoint.mjs` | over a simulated 200-turn session: a productive session gets **zero** checkpoints, a stalled one gets full instructions exactly once then a ≤350-char reminder, total injected context stays under 2k chars, backoff spaces them out, resumed work resets the streak, and an unresponsive model is handed to the human instead of nagged |
 | `functional/test-project-jail.mjs` | heredoc **bodies** mentioning `~/.pi/agent/` no longer trip the jail (the recorded 2026-07-26 false positive), while every real escape still blocks — `cat > ~/Desktop/…​ <<EOF`, `mkdir -p ~/Desktop`, `cp` to home, `cd` out; reads/executes outside stay allowed; `<<-`, unquoted tags, post-body commands and unterminated heredocs all covered |
 

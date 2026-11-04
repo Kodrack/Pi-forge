@@ -26,6 +26,9 @@
 // Install: copy to ~/.pi/agent/extensions/thinking-guard.ts
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 // ---------- LIMITS (tune these) ----------
 const MAX_THINKING_CHARS = 15000;  // ~3.75k tokens — soft, steers next turn
@@ -61,7 +64,36 @@ Rules:
 
 The file system is your brain. Use it. Stop holding state in the conversation.`;
 
+// Dory's chat/plan/respond jobs are the one case where a long TEXT stream is
+// the point: the whole deliverable is the <<<BRIEF>>>/<<<TEST>>> marker block
+// the board parses, and a brief with a real acceptance test runs well past
+// HARD_ABORT_CHARS. Aborting it mid-stream loses the plan (the card never
+// moves), so those stages get raised TEXT caps. The thinking channel keeps the
+// normal caps — a runaway there is still a runaway. Kinds from dory.mjs:
+// chat | respond | plan | exec (exec is a normal coding session).
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+const DORY_TEXT_ABORT_CHARS = 24000;  // per text block, dory marker deliverable
+const DORY_TURN_ABORT_CHARS = 40000;  // cumulative per turn, dory marker deliverable
+
 // ---------- HELPERS ----------
+// The Dory stage this session runs, or null. DORY_STAGE (env) for headless
+// `pi -p` jobs, dory-runner.json for in-session /dory jobs — honored only when
+// `pid` matches, so a record left behind by a killed /dory session can never
+// relax the caps in an unrelated session.
+function doryReadonlyStage(): string | null {
+  let kind: string | null = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (!kind) {
+    try {
+      const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+      kind = state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+    } catch {
+      kind = null;
+    }
+  }
+  return kind !== null && DORY_READONLY_KINDS.includes(kind) ? kind : null;
+}
+
 function getThinkingText(message: any): string {
   if (!message?.content) return "";
   return (message.content as any[])
@@ -79,6 +111,21 @@ export default function (pi: ExtensionAPI) {
   let turnStreamChars = 0;
   let liveWarnFired = false;
   let abortedThisTurn = false;
+
+  // Re-resolved at every BLOCK boundary (thinking_start / text_start), not once
+  // per session: from the second job onward dory-mode runs consecutive jobs — of
+  // different kinds — in ONE session, so caps captured at session_start would
+  // belong to the previous job (and would leave an exec job with a planner's
+  // relaxed caps). Per-block is cheap; per-delta would be an fs read per token.
+  let doryStage: string | null = doryReadonlyStage();
+  let textAbortChars = doryStage ? DORY_TEXT_ABORT_CHARS : HARD_ABORT_CHARS;
+  let turnAbortChars = doryStage ? DORY_TURN_ABORT_CHARS : TURN_ABORT_CHARS;
+
+  function resolveCaps(): void {
+    doryStage = doryReadonlyStage();
+    textAbortChars = doryStage ? DORY_TEXT_ABORT_CHARS : HARD_ABORT_CHARS;
+    turnAbortChars = doryStage ? DORY_TURN_ABORT_CHARS : TURN_ABORT_CHARS;
+  }
 
   // Kill a runaway generation mid-stream and steer the model to think briefly.
   async function abortRunaway(ctx: any, channel: string, chars: number): Promise<void> {
@@ -105,7 +152,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(
-      `thinking-guard active (soft ${MAX_THINKING_CHARS} chars/turn, hard abort at ${HARD_ABORT_CHARS}/block + ${TURN_ABORT_CHARS}/turn — thinking AND text)`,
+      `thinking-guard active (soft ${MAX_THINKING_CHARS} chars/turn, hard abort at ${HARD_ABORT_CHARS}/block thinking + ` +
+      `${textAbortChars}/block text + ${turnAbortChars}/turn` +
+      `${doryStage ? ` — text caps raised for the dory ${doryStage} deliverable` : ""})`,
       "info"
     );
   });
@@ -114,8 +163,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_update", async (event, ctx) => {
     const ae = event.assistantMessageEvent as any;
 
-    if (ae.type === "thinking_start") { liveThinkingChars = 0; liveWarnFired = false; }
-    if (ae.type === "text_start") { liveTextChars = 0; }
+    if (ae.type === "thinking_start") { liveThinkingChars = 0; liveWarnFired = false; resolveCaps(); }
+    if (ae.type === "text_start") { liveTextChars = 0; resolveCaps(); }
 
     if (ae.type === "thinking_delta") {
       const len = (ae.content as string)?.length ?? 0;
@@ -130,7 +179,7 @@ export default function (pi: ExtensionAPI) {
       }
       // Per-turn cumulative cap: catches many-small-blocks runaways that the
       // per-block cap (reset on every block start) never sees.
-      if (!abortedThisTurn && turnStreamChars > TURN_ABORT_CHARS) {
+      if (!abortedThisTurn && turnStreamChars > turnAbortChars) {
         await abortRunaway(ctx, "turn output (cumulative)", turnStreamChars);
       }
     }
@@ -140,10 +189,10 @@ export default function (pi: ExtensionAPI) {
       const len = (ae.content as string)?.length ?? 0;
       liveTextChars += len;
       turnStreamChars += len;
-      if (!abortedThisTurn && liveTextChars > HARD_ABORT_CHARS) {
+      if (!abortedThisTurn && liveTextChars > textAbortChars) {
         await abortRunaway(ctx, "response text", liveTextChars);
       }
-      if (!abortedThisTurn && turnStreamChars > TURN_ABORT_CHARS) {
+      if (!abortedThisTurn && turnStreamChars > turnAbortChars) {
         await abortRunaway(ctx, "turn output (cumulative)", turnStreamChars);
       }
     }
@@ -197,7 +246,9 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       ctx.ui.notify(
         `thinking-guard: soft ${MAX_THINKING_CHARS} chars / ${MAX_THINKING_LINES} lines per turn; ` +
-        `hard abort ${HARD_ABORT_CHARS} chars/block, ${TURN_ABORT_CHARS} chars cumulative/turn. ` +
+        `hard abort ${HARD_ABORT_CHARS} chars/block thinking, ${textAbortChars} chars/block text, ` +
+        `${turnAbortChars} chars cumulative/turn` +
+        `${doryStage ? ` (text caps raised: dory ${doryStage} job)` : ""}. ` +
         `Edit ~/.pi/agent/extensions/thinking-guard.ts to change limits, then /reload.`,
         "info"
       );

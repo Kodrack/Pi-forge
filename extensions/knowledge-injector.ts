@@ -62,6 +62,16 @@ function hashContent(content: string): string {
 
 const KNOWLEDGE_DIR = path.join(process.cwd(), "knowledge");
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
+// Dory stages that write no code. There the selection pass is pure cost (sub-Pi
+// calls before the job even starts) and the write-block is actively harmful: a
+// chat/plan job only emits marker text, so blocking it on a .think/_knowledge.md
+// acknowledgment burns turns and can push the marker block out of the final
+// message, which is how a plan silently fails to reach the board.
+// Kinds the orchestrator dispatches: chat | respond | plan | exec.
+// "respond" (the Revise stage) belongs here too: it either answers a question
+// or rewrites the plan — still marker text only, never code.
+const DORY_SKIP_KINDS = ["chat", "plan", "respond"];
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 
 // ---------- HELPERS ----------
 
@@ -72,6 +82,32 @@ function isEnabled(): boolean {
   } catch {
     return true;
   }
+}
+
+// The Dory stage this session is executing, or null if this is not a Dory job.
+// Two transports, because Dory runs jobs two different ways:
+//   - HEADLESS throwaway `pi -p` subprocess (no runner attached): dory.mjs passes
+//     DORY_STAGE in the environment.
+//   - IN-SESSION via /dory (runner attached): dory-mode.ts records the active job
+//     in dory-runner.json, since it cannot set env vars on its own process.
+// Check the env first — it is process-scoped and cannot go stale. The file
+// record is honored only when its `pid` matches: it is a single global slot in
+// ~/.pi, so a record left behind by a killed /dory session would otherwise make
+// every later session on the machine think a plan job is in flight.
+function doryStage(): string | null {
+  const fromEnv = process.env.DORY_STAGE;
+  if (fromEnv) return String(fromEnv);
+  try {
+    const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+    return state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDorySkipStage(): boolean {
+  const kind = doryStage();
+  return kind !== null && DORY_SKIP_KINDS.includes(kind);
 }
 
 function thinkDir(): string {
@@ -415,6 +451,19 @@ export default function (pi: ExtensionAPI) {
 
     if (!isEnabled()) return;
 
+    // Dory chat/plan stage: no code will be written, so skip the whole selection
+    // pass and pre-acknowledge so nothing downstream blocks the job.
+    if (isDorySkipStage()) {
+      knowledgeAcknowledged = true;
+      // console.log as well as notify: headless Dory subprocesses have no TUI,
+      // and dory.mjs streams their plain stdout into the board's live panel.
+      // notify alone would make this skip invisible exactly where it matters.
+      const line = `knowledge-injector: skipped (dory ${doryStage()} stage — no code written)`;
+      console.log(`\n ${line}`);
+      ctx.ui.notify(line, "info");
+      return;
+    }
+
     // IMMEDIATELY clear old manifest before any async work
     // This prevents turn_start from reading stale data during selection
     try { fs.unlinkSync(manifestPath()); } catch {}
@@ -469,6 +518,12 @@ export default function (pi: ExtensionAPI) {
     if (!isEnabled() || firstTurnHandled) return;
     firstTurnHandled = true;
 
+    // Dory chat/plan stage — inject nothing (input already pre-acknowledged).
+    if (isDorySkipStage()) {
+      knowledgeAcknowledged = true;
+      return;
+    }
+
     const active = readManifest();
     if (active.length === 0) {
       knowledgeAcknowledged = true;
@@ -491,6 +546,7 @@ export default function (pi: ExtensionAPI) {
   // After compaction: rebuild from manifest and re-inject
   pi.on("session_compact", async (_event: any, ctx: any) => {
     if (!isEnabled()) return;
+    if (isDorySkipStage()) return; // nothing was injected; nothing to re-inject
 
     const active = readManifest();
     if (active.length === 0) return;
@@ -516,6 +572,11 @@ export default function (pi: ExtensionAPI) {
   // Block code writes until model acknowledges knowledge
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (!isEnabled() || knowledgeAcknowledged) return;
+
+    // Never block a Dory chat/plan job — it has no knowledge to acknowledge and
+    // no code to guard. Checked here too, not just in input, because a job prompt
+    // arrives via sendUserMessage and may not raise an input event at all.
+    if (isDorySkipStage()) return;
 
     const name = (event as any).toolName ?? "";
     if (name !== "write" && name !== "edit") return;

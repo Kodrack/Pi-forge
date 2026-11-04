@@ -13,11 +13,20 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
 // ---------- THRESHOLDS ----------
 // Minimum response text length to be considered "analysis worth saving".
 // Short answers (<500 chars) are not worth forcing a file write.
 const MIN_ANALYSIS_CHARS = 1000;
+
+// Dory's chat/plan/respond jobs are read-only and their deliverable IS a long
+// text block (the <<<BRIEF>>>/<<<TEST>>> marker payload). Nagging them to save
+// it to .think/step-NNN.md is both impossible (dory-plan-guard blocks the
+// write) and harmful: on 2026-07-25 that steer is what turned the T-006 plan
+// job into an implementation run. Kinds from dory.mjs: chat|respond|plan|exec.
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 
 // ---------- STEERING MESSAGE ----------
 const CORRECTION_MESSAGE = `[analysis-guard] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it; act on it.
@@ -38,6 +47,23 @@ ACTION REQUIRED:
 Do this NOW before responding further. Keep the file under 2K tokens.`;
 
 // ---------- HELPERS ----------
+// The Dory stage this session runs, or null. DORY_STAGE (env) for headless
+// `pi -p` jobs, dory-runner.json for in-session /dory jobs — the latter only
+// when `pid` matches, since that file is one global slot and a record left by a
+// killed session would otherwise silence this guard in every later session.
+function doryReadonlyStage(): string | null {
+  let kind: string | null = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (!kind) {
+    try {
+      const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+      kind = state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+    } catch {
+      kind = null;
+    }
+  }
+  return kind !== null && DORY_READONLY_KINDS.includes(kind) ? kind : null;
+}
+
 function getTextLength(message: any): number {
   if (!message?.content) return 0;
   return (message.content as any[])
@@ -72,8 +98,11 @@ export default function (pi: ExtensionAPI) {
   let turnHadFileWrite = false;
 
   pi.on("session_start", async (_event, ctx) => {
+    const dory = doryReadonlyStage();
     ctx.ui.notify(
-      `analysis-guard active (triggers on responses >${MIN_ANALYSIS_CHARS} chars with no file write)`,
+      dory
+        ? `analysis-guard: standing down (dory ${dory} job — the response text IS the deliverable)`
+        : `analysis-guard active (triggers on responses >${MIN_ANALYSIS_CHARS} chars with no file write)`,
       "info"
     );
   });
@@ -95,6 +124,13 @@ export default function (pi: ExtensionAPI) {
 
   // Enforce at turn end.
   pi.on("turn_end", async (event, ctx) => {
+    // Checked per turn, not once per session: dory-mode runs consecutive jobs
+    // (different kinds) in ONE session from the second job onward, so a stage
+    // captured at session_start would be the previous job's.
+    if (doryReadonlyStage()) {
+      turnHadFileWrite = false;
+      return;
+    }
     const textLen = getTextLength(event.message);
 
     // Also check toolResults for any write/edit that completed this turn.

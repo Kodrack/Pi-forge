@@ -27,6 +27,10 @@
 //   - Gives up after MAX_BLOCKS_PER_SESSION and hands control to the human
 //     rather than looping — a model that cannot make the test pass must not be
 //     trapped against it forever.
+//   - No-ops entirely inside Dory jobs: Dory already owns its own oracle
+//     (runTest / test_cmd in organizer/board/dory.mjs) and moves the card on
+//     exit 0. Two oracles disagreeing would deadlock the board.
+//
 // Supersedes execution-guard — "the test passes" is strictly stronger than
 // "something ran". Leave execution-guard disabled when this is on.
 //
@@ -71,12 +75,29 @@ const CODE_EXTENSIONS = /\.(js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|sh|php|pl|lua|c|cp
 // execution-guard — keep these three in sync).
 const COMPLETE_STATUS = /##\s*Status:\s*[^\n]*\b(complete|completed|done|finished)\b/i;
 
+// Dory owns its own done check; see header. Kinds from dory.mjs.
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
 function isEnabled(): boolean {
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
     return !(config.disabled ?? []).includes("acceptance-guard");
   } catch {
     return true;
+  }
+}
+
+// True when this session is running a Dory job of ANY kind (including exec).
+// DORY_STAGE covers headless `pi -p` jobs; dory-runner.json covers in-session
+// /dory jobs and is honored only when `pid` matches, so a record left behind by
+// a killed /dory session can never silence the guard in an unrelated session.
+function isDoryJob(): boolean {
+  if (process.env.DORY_STAGE) return true;
+  try {
+    const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+    return !!(state?.running && state?.job?.kind && state.pid === process.pid);
+  } catch {
+    return false;
   }
 }
 
@@ -140,6 +161,8 @@ const WRITE_TEST_INSTRUCTIONS =
 
 export default function (pi: ExtensionAPI) {
   if (!isEnabled()) return;
+  // Dory brings its own oracle — stay out of its way entirely.
+  if (isDoryJob()) return;
 
   // Monotonic per-session sequence: has any code been modified yet?
   let seq = 0;

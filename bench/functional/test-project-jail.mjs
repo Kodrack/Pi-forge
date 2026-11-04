@@ -66,8 +66,8 @@ check("absolute /Users mutation → still blocked", await blocked(bash(`echo x >
 check("cd out of the project → still blocked", await blocked(bash("cd ~/other-project && npm test")));
 
 // ---- reading/executing outside the project stays allowed ----
-check("running a script outside the project → allowed", !(await blocked(bash("bash ~/other-repo/tests/T-001.sh"))));
-check("reading an outside file → allowed", !(await blocked(bash("cat ~/other-repo/data.json"))));
+check("running a script outside the project → allowed", !(await blocked(bash("bash ~/dev-mind/tests/T-001.sh"))));
+check("reading an outside file → allowed", !(await blocked(bash("cat ~/dev-mind/tasks.json"))));
 
 // ---- ordinary in-project work stays allowed ----
 check("relative chunked append → allowed", !(await blocked(bash("cat >> regex.js <<'C'\nmatch()\nC"))));

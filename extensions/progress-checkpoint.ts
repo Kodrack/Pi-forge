@@ -31,6 +31,9 @@
 // Deliberately NOT a blocker: the model may be legitimately mid-task, and
 // blocking a tool call would be wrong. This steers.
 //
+// Inert inside Dory jobs (chat/plan/respond are one-shot marker deliverables;
+// exec has its own oracle and retry budget in dory.mjs).
+//
 // Install: copy to ~/.pi/agent/extensions/progress-checkpoint.ts
 // Toggle:  /piforge disable progress-checkpoint | /piforge enable progress-checkpoint
 
@@ -59,12 +62,28 @@ const MAX_MODEL_CHECKPOINTS = 2;
 // a session legitimately spending turns on README/config is not stalled).
 const CODE_EXTENSIONS = /\.(js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|sh|php|pl|lua|c|cpp|h|java|cs|swift|kt|json|md|html|css|yml|yaml|toml)$/i;
 
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
 function isEnabled(): boolean {
   try {
     const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
     return !(config.disabled ?? []).includes("progress-checkpoint");
   } catch {
     return true;
+  }
+}
+
+// True when this session is running a Dory job of any kind. DORY_STAGE covers
+// headless `pi -p` jobs; dory-runner.json covers in-session /dory jobs and is
+// honored only when `pid` matches, so a stale record from a killed session can
+// never silence this in an unrelated session.
+function isDoryJob(): boolean {
+  if (process.env.DORY_STAGE) return true;
+  try {
+    const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+    return !!(state?.running && state?.job?.kind && state.pid === process.pid);
+  } catch {
+    return false;
   }
 }
 
@@ -116,6 +135,8 @@ const CHECKPOINT_TERSE =
 
 export default function (pi: ExtensionAPI) {
   if (!isEnabled()) return;
+  // Dory owns its own completion loop — stay out of it.
+  if (isDoryJob()) return;
 
   let turnCount = 0;
   // Turn number of the next scheduled evaluation.

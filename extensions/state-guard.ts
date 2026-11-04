@@ -18,6 +18,11 @@ import * as path from "path";
 import * as os from "os";
 
 const PIFORGE_CONFIG = path.join(os.homedir(), ".pi", "piforge.json");
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
+// Dory stages that produce marker text only — no code, no .think/ brain files.
+// Kinds dispatched by dory.mjs: chat | respond | plan | exec.
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
 
 // How many turns without a _state.md write before we inject a reminder
 const STALE_TURN_THRESHOLD = 5;
@@ -37,6 +42,26 @@ function isEnabled(): boolean {
   } catch {
     return true;
   }
+}
+
+// The Dory stage this session is executing (null = not a Dory job). Two
+// transports: DORY_STAGE in the env for headless `pi -p` jobs, dory-runner.json
+// for in-session /dory jobs (dory-mode.ts cannot set env vars on its own
+// process). The `pid` match matters: that file is one global slot, so without it
+// an unrelated session — or one started after a /dory session died mid-job —
+// would read someone else's job. See dory-plan-guard.ts, which enforces
+// read-only in those stages.
+function doryReadonlyStage(): string | null {
+  let kind: string | null = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (!kind) {
+    try {
+      const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+      kind = state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+    } catch {
+      kind = null;
+    }
+  }
+  return kind !== null && DORY_READONLY_KINDS.includes(kind) ? kind : null;
 }
 
 function isThinkPath(filePath: string): boolean {
@@ -184,6 +209,9 @@ export default function (pi: ExtensionAPI) {
   // AUTO-RESET on a new request. The old behaviour armed a hard block here;
   // see resetForNewTask() above for why that was replaced.
   pi.on("input", (event: any, ctx?: any) => {
+    // Read-only dory job: it must not touch .think/ — skip the auto-reset
+    // (archiving + rewriting _state.md is a file write the job forbids).
+    if (doryReadonlyStage()) return { action: "continue" as const };
     reopenPending = false;
     if (taskMarkedComplete(process.cwd())) {
       const moved = resetForNewTask(process.cwd(), (event as any).text ?? "");
@@ -202,6 +230,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    const dory = doryReadonlyStage();
+    if (dory) {
+      ctx.ui.notify(`state-guard: standing down (dory ${dory} job — marker text only, no .think/ workflow)`, "info");
+      return;
+    }
     const stateFile = path.join(ctx.cwd, ".think", "_state.md");
     stateFileExists = fs.existsSync(stateFile);
 
@@ -217,6 +250,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event: any, ctx: any) => {
+    // Checked per call, not once per session: from the second job onward
+    // dory-mode runs consecutive jobs (of different kinds) in ONE session, so a
+    // stage captured at session_start would be the previous job's.
+    if (doryReadonlyStage()) return;
     const toolName = event.toolName ?? "";
     const input = event.input as Record<string, any> ?? {};
     let filePath = input.path ?? input.file_path ?? "";
@@ -339,6 +376,7 @@ Then continue with your work.`,
   });
 
   pi.on("turn_end", async (_event: any, ctx: any) => {
+    if (doryReadonlyStage()) return; // read-only dory job: no .think/ workflow to nag about
     // Count turns since last _state.md write
     if (turnHadStateWrite) {
       turnsSinceStateWrite = 0;

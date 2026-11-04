@@ -24,6 +24,15 @@ done
 ln -sfn "$PIFORGE_DIR/skills/incremental-codegen/SKILL.md" "$PI_DIR/skills/incremental-codegen/SKILL.md"
 ln -sfn "$PIFORGE_DIR/config/piforge-self.md" "$HOME/.pi/piforge-self.md"
 
+# Dory board + engine — dory-board.ts starts it from ~/.pi/organizer/board/
+mkdir -p "$HOME/.pi/organizer/board"
+for f in server.mjs index.html dory.mjs; do
+  ln -sfn "$PIFORGE_DIR/organizer/board/$f" "$HOME/.pi/organizer/board/$f"
+done
+ln -sfn "$PIFORGE_DIR/organizer/dory-persona.md" "$HOME/.pi/organizer/dory-persona.md"
+ln -sfn "$PIFORGE_DIR/organizer/dory-console.sh" "$HOME/.pi/organizer/dory-console.sh"
+echo "  ~/.pi/organizer/{board/*,dory-persona.md,dory-console.sh} → repo"
+
 # Global AGENTS.md — Pi loads ~/.pi/agent/AGENTS.md natively in every project
 ln -sfn "$PIFORGE_DIR/project-template/AGENTS.md" "$PI_DIR/AGENTS.md"
 echo "  ~/.pi/agent/AGENTS.md → repo project-template/AGENTS.md (global contract)"

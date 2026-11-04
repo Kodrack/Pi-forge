@@ -131,6 +131,14 @@ const check = (label, ok) => results.push([label, ok]);
   check("in-progress checkpoint → allowed", !v);
 }
 
+// ---- Dory owns its own oracle: the guard must be completely inert there ----
+{
+  process.env.DORY_STAGE = "exec";
+  const { handlers } = harness();
+  check("Dory job → no handlers registered (guard inert)", Object.keys(handlers).length === 0);
+  delete process.env.DORY_STAGE;
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 
 let failed = 0;

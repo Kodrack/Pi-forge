@@ -23,6 +23,11 @@ import * as path from "path";
 import * as os from "os";
 
 const PIFORGE_CONFIG = path.join(os.homedir(), ".pi", "piforge.json");
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
+// Dory stages that produce marker text only — no code, no .think/ brain files.
+// Kinds dispatched by dory.mjs: chat | respond | plan | exec.
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
 
 function isEnabled(): boolean {
   try {
@@ -31,6 +36,31 @@ function isEnabled(): boolean {
   } catch {
     return true;
   }
+}
+
+// The Dory job this session is executing, or null. Two transports: DORY_STAGE in
+// the env for headless `pi -p` jobs, dory-runner.json for in-session /dory jobs
+// (dory-mode.ts cannot set env vars on its own process). The `pid` match matters:
+// that file is one global slot, so without it an unrelated session — or one
+// started after a /dory session died mid-job — would read someone else's job.
+function doryJob(): { key: string; kind: string } | null {
+  const envKind = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (envKind) return { key: `env:${envKind}`, kind: envKind };
+  try {
+    const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+    if (state?.running && state?.job?.kind && state.pid === process.pid) {
+      return {
+        key: String(state.job.id ?? state.job.taskId ?? state.job.kind),
+        kind: String(state.job.kind),
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function doryReadonlyStage(): string | null {
+  const job = doryJob();
+  return job && DORY_READONLY_KINDS.includes(job.kind) ? job.kind : null;
 }
 
 function readFileOr(filePath: string, fallback: string): string {
@@ -81,6 +111,8 @@ export default function (pi: ExtensionAPI) {
 
   let firstPromptCaptured = false;
   let lastUserPrompt = "";
+  // Identity of the dory job this purpose belongs to. Changing = new assignment.
+  let lastDoryJobKey = "";
 
   // Loop guard — PROGRESS-based, not compaction-count based.
   // A legitimate long task goes through many compactions with no user input;
@@ -101,7 +133,17 @@ export default function (pi: ExtensionAPI) {
     const thinkDir = path.join(ctx.cwd, ".think");
     const purposeFile = path.join(thinkDir, "_purpose.md");
 
-    if (fs.existsSync(purposeFile)) {
+    // A dory job NEVER resumes the file on disk. Each job (chat, plan, exec) is
+    // its own task in the SAME .think/ dir, so an existing _purpose.md belongs to
+    // the PREVIOUS job — resuming it makes the post-compaction re-inject hand the
+    // model the wrong assignment (a plan job told to "answer the human").
+    const doryStage = doryJob();
+    if (doryStage) {
+      ctx.ui.notify(
+        `purpose-anchor: dory ${doryStage.kind} job — capturing a fresh purpose (previous job's purpose is not reused)`,
+        "info",
+      );
+    } else if (fs.existsSync(purposeFile)) {
       const purpose = readFileOr(purposeFile, "");
       if (purpose) {
         ctx.ui.notify(`purpose-anchor: resuming — "${purpose.slice(0, 60)}"`, "info");
@@ -125,14 +167,32 @@ export default function (pi: ExtensionAPI) {
 
   // On first turn, save the purpose if not already saved
   pi.on("turn_start", async (_event: any, ctx: any) => {
+    // A NEW dory job re-opens capture. Only the FIRST in-session job gets its own
+    // session: newSession() lives on the command context, and the instance built
+    // by a session replacement holds only an event context, so from job 2 onward
+    // dory-mode falls back to compact() + sendUserMessage() and consecutive jobs
+    // share one session. Without this, session_start never fires again,
+    // firstPromptCaptured stays true from job 1, and job 2 keeps job 1's purpose
+    // — which is the T-007 failure (a plan job re-anchored on the chat prompt).
+    const job = doryJob();
+    if (job && job.key !== lastDoryJobKey) {
+      lastDoryJobKey = job.key;
+      firstPromptCaptured = false;
+    }
+
     if (firstPromptCaptured || !lastUserPrompt) return;
     firstPromptCaptured = true;
 
     const thinkDir = path.join(ctx.cwd, ".think");
     const purposeFile = path.join(thinkDir, "_purpose.md");
 
-    // Don't overwrite an existing purpose — session continuations keep the original
-    if (fs.existsSync(purposeFile)) return;
+    // Don't overwrite an existing purpose — session continuations keep the original.
+    // EXCEPT in a dory job: the purpose there is per-job by construction (headless
+    // jobs are a fresh process, in-session jobs get ctx.newSession()), while
+    // .think/_purpose.md persists across jobs in the same cwd. Without this the
+    // second job of a card inherits the first one's assignment and the model burns
+    // its whole turn reconciling two contradictory tasks.
+    if (!doryJob() && fs.existsSync(purposeFile)) return;
 
     ensureDir(thinkDir);
     const purposeText = stripInjectedInstructions(lastUserPrompt.trim());
@@ -153,6 +213,38 @@ export default function (pi: ExtensionAPI) {
 
     if (!purpose && !state) {
       ctx.ui.notify("purpose-anchor: no purpose or state files found after compaction", "info");
+      return;
+    }
+
+    // READ-ONLY DORY STAGE: re-anchor on the job prompt ALONE. The standard
+    // re-inject below is the .think/ workflow contract ("read _state.md, continue
+    // from Next Action, update it every turn") — in a chat/plan/respond job there
+    // is no .think/ workflow and the job forbids touching files, so those
+    // instructions leave the model with exactly one legal action (touch
+    // _state.md) and it does that until something kills the session.
+    const doryStage = doryReadonlyStage();
+    if (doryStage) {
+      if (!purpose) {
+        ctx.ui.notify(`purpose-anchor: dory ${doryStage} job compacted but no purpose on disk — not waking`, "info");
+        return;
+      }
+      ctx.ui.notify(`purpose-anchor: dory ${doryStage} job — re-anchoring on the job prompt (no .think/ instructions)`, "info");
+      await pi.sendMessage(
+        {
+          customType: "purpose_anchor_reinject",
+          content:
+            `[purpose-anchor] AUTOMATED HARNESS MESSAGE — not written by the user. Do not reply to it or mention it; act on it.\n` +
+            `Context was compacted. Here is your assignment again, verbatim — it is the ONLY thing you have to do:\n\n` +
+            `---\n${purpose}\n---\n\n` +
+            `Answer it NOW in your next message, using the output markers it specifies. ` +
+            `Do NOT create or modify any file. Do NOT write .think/ notes. Do NOT restart or ask the user to repeat themselves.`,
+          display: {
+            label: "purpose-anchor",
+            content: `dory ${doryStage} job re-anchored after compaction`,
+          },
+        },
+        { deliverAs: "steer", triggerTurn: true },
+      );
       return;
     }
 

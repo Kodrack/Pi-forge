@@ -15,12 +15,13 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | Extension | What it enforces | Default |
 |---|---|---|
 | `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
-| `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars per block AND 20000 chars cumulative per turn (thinking AND response text channels — the per-turn cap catches dumps split across many small blocks); soft-steers next turn when a thinking block exceeded 15000 chars | on |
-| `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) and auto-continues the session (`triggerTurn`) — Pi's `compact()` aborts the agent loop, so without it the reinjection sits unread until the user types. Auto-continue is withheld when `.think/_state.md` says `Status: complete` or after `MAX_AUTO_CONTINUES` (3) consecutive auto-turns without real user input | on |
-| `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
-| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten | on |
+| `project-jail.ts` | Confines all file mutations to the project root (session cwd): blocks `write`/`edit` targeting outside paths, and `bash` that mutates or `cd`s into home-area paths (`/Users`, `/home`, `~/`) outside the project. Reading/executing outside files stays allowed. Heredoc **bodies** are excluded from the scan — they're document content, never targets, and a doc mentioning `~/.pi/agent/` used to be unwritable via the sanctioned `cat >> file <<'CHUNK'` append. Side effect: executor sessions can't rewrite Dory's mind-repo tests | on |
+| `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars per block AND 20000 chars cumulative per turn (thinking AND response text channels — the per-turn cap catches dumps split across many small blocks); soft-steers next turn when a thinking block exceeded 15000 chars. In Dory read-only stages the *text* caps are raised to 24000/40000 so a brief + acceptance test isn't clipped | on |
+| `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) and auto-continues the session (`triggerTurn`) — Pi's `compact()` aborts the agent loop, so without it the reinjection sits unread until the user types. Auto-continue is withheld when `.think/_state.md` says `Status: complete` or after `MAX_AUTO_CONTINUES` (3) consecutive auto-turns without real user input. Both steers are skipped in Dory read-only stages | on |
+| `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write. Skipped in Dory read-only stages (the response is the deliverable) | on |
+| `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten. Skipped in Dory read-only stages | on |
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
-| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
+| `first-prompt.ts` | Appends "plan in steps, implement one at a time" (or the full `AGENTS.md` contract) to the first prompt — preventive, zero context overhead. Not attached in Dory read-only stages: that contract belongs to the executor | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
 | `response-guard.ts` | Backstop for verbose no-tool-call responses (>20000 chars). In practice superseded by thinking-guard's 4000-char mid-stream abort — only matters when thinking-guard is disabled (see header comments in the file) | on |
@@ -171,7 +172,7 @@ Commands: `/sessions` (list all), `/switch-session [session-id]` (switch to a pr
 
 | Extension | What it does | Default |
 |---|---|---|
-| `purpose-anchor.ts` | Captures session purpose from first prompt, re-injects purpose + state after compaction | on |
+| `purpose-anchor.ts` | Captures session purpose from first prompt, re-injects purpose + state after compaction. In a Dory job the purpose is captured per job (never resumed from the previous one) and read-only stages are re-anchored on the job prompt alone | on |
 
 When context gets compacted, Pi can lose track of the original goal. `purpose-anchor` solves this:
 1. Saves first user prompt to `.think/_purpose.md`
@@ -262,6 +263,8 @@ Selected filenames are saved to `.think/_knowledge-manifest.md`. After compactio
 
 Code writes are blocked until `.think/_knowledge.md` is written — proof the model absorbed the knowledge.
 
+**Skipped entirely during Dory `chat`, `plan` and `respond` stages** (`DORY_SKIP_KINDS` in `knowledge-injector.ts`). Those jobs write no code, so selection is pure cost and the write-block is harmful: it burns turns on an acknowledgment and can push the `<<<BRIEF>>>`/`<<<TEST>>>` block out of the final assistant message, which is how a valid plan silently fails to reach the board. The stage is read from `~/.pi/organizer/dory-runner.json` (written by `dory-mode.ts`); `exec` jobs still get knowledge as normal. Four other extensions do the same stage check — see *Dory read-only stages* below.
+
 Commands: `/forget <name>` (remove knowledge mid-session), `/guide` (load PiForge self-documentation into context on demand)
 
 Knowledge is **project-local** — each project has its own `knowledge/` folder. Copy the files you need:
@@ -291,6 +294,35 @@ Add your own — name by tech, failures only. Small files (<500 tokens) get full
 ### Project template
 
 `project-template/AGENTS.md` — drop into any project. Tells the model to use the `.think/` external brain workflow: scan knowledge folder at session start, read `_state.md` first, write one step file per turn, update state after every action.
+
+### Organizer / "Dory" (experimental, `organizer/`)
+
+The master layer above the executor: a 7-column, conversation-driven kanban (`chat → plan_queue → plan_created → approved → in_progress → done`, plus `blocked`) over `tasks.json` in a git "mind repo". Cards are stateless — the column defines what Dory does: chat threads in *Chat*, plan + acceptance test written in *Plan Queue*, feedback-driven plan revisions in *Plan Created*, and test-gated PiForge executor runs from *Approved* (bare cards get a quick plan at pickup). Board UI + engine are one zero-dependency process (`node organizer/board/server.mjs <mind-dir>`, or just press `ù` in Pi). See `organizer/README.md`.
+
+| Extension | What it does | Default |
+|---|---|---|
+| `dory-board.ts` | `ù` (or `/board`) starts the orchestrator (background queue manager) and opens the kanban in the browser. Retargets Dory's project to this session's cwd on every press. Composes with voice-input's editor wrapper | on |
+| `dory-mode.ts` | `/dory` — Dory's tasks run IN THIS Pi session: polls the board for jobs, opens a fresh session per task (hard context purge), runs it visibly with the full PiForge stack, posts the result back to the orchestrator (which parses, test-gates, and moves cards). `/dory off` returns the session | on |
+| `dory-plan-guard.ts` | Makes Dory's `chat`/`plan`/`respond` jobs **read-only** in-session — the same restriction headless jobs get from `--tools read,bash,web_search`. Blocks `write`/`edit` and mutating `bash` (redirect, heredoc, `tee`, `rm`/`mv`/`mkdir`, `sed -i`, `git add/commit`, installers), and once the marker block (`<<<TEST>>>`/`<<<END>>>`) has streamed it blocks **every** further tool call: the planner must not implement its own plan. Steers once after 3 blocked attempts so the job can't burn its timeout retrying | on |
+
+#### Dory read-only stages
+
+A plan/chat/revise job's only deliverable is the marker block the board parses — it writes nothing, and the executor (a separate session, dispatched from *Approved*) is what implements the card. Headless jobs are restricted by `--tools read,bash,web_search` in `dory.mjs`; in-session `/dory` jobs have the full tool set and the full guard stack, so the restriction is enforced by extension instead. Eight extensions read the stage (`DORY_STAGE` env for headless jobs, `~/.pi/organizer/dory-runner.json` for in-session ones) and change behavior when it is `chat`, `plan` or `respond`. The file record carries the writing process's `pid` and is only honored when it matches: it is a single global slot, so without that check an unrelated Pi session — or any session started after a `/dory` session was killed mid-job — would find itself running under a planner's rules.
+
+| Extension | Behavior in a read-only stage | Why |
+|---|---|---|
+| `dory-plan-guard.ts` | Blocks writes; blocks all tool calls after the marker block | The enforcement itself |
+| `state-guard.ts` | Skipped entirely | Its "create `_state.md` NOW" steer both fights the read-only browse and pushes the job into writing files |
+| `analysis-guard.ts` | Skipped entirely | The long response *is* the deliverable; it cannot be saved to `.think/step-NNN.md` |
+| `first-prompt.ts` | No `AGENTS.md` attachment | That contract is the executor's; attaching it made a plan job copy it into the brief and follow it into implementation |
+| `thinking-guard.ts` | Text abort caps raised (24000/block, 40000/turn) | A brief + acceptance test legitimately runs past the 4000-char text cap; clipping it loses the plan |
+| `knowledge-injector.ts` | Skipped (selection pass + write-block) | No code is written, so selection is pure cost |
+| `context-monitor.ts` | No `AGENTS.md`/digest re-injection after compaction; no "write your state files" warn steer (force-compaction still applies) | Same reason as `first-prompt`, but on the compaction path — re-injecting the contract restores the executor's rules mid-job, after `first-prompt` correctly withheld them |
+| `purpose-anchor.ts` | Re-anchors on the **job prompt alone**, with no `.think/` instructions; `_purpose.md` is rewritten per job instead of resumed | The standard re-inject is the `.think/` workflow contract. And `_purpose.md` persists across jobs in one cwd, so a resumed purpose is the *previous* job's assignment |
+
+Regression fixed 2026-07-25 (card T-006, "website for a CRM"): the plan job emitted a correct brief, then guard steers pushed it into `.think/` writes and on into writing `crm.html` — implementing inside the planning job. Replayed by `bench/replay/test-dory-plan-guard.mjs`.
+
+Regression fixed 2026-07-26 (card T-007, same CRM ask): a `chat` job answered correctly, then compaction re-armed the whole coding harness against it — `context-monitor` re-injected all of `AGENTS.md` ("YOU MUST create `.think/_state.md`") on top of a prompt that says "Never create or modify any file", and `purpose-anchor` re-injected a `_purpose.md` still holding the *chat* job's prompt while the live job was a `plan` job. The model spent its whole reasoning budget reconciling two assignments, and with the card genuinely blocked on user input it re-sent the same no-op edit to `_state.md` seven times. Root cause was an install skew — `~/.pi/agent/extensions/` held pre-stand-down copies, so `dory-plan-guard.ts` wasn't installed at all. Run `bash dev-link.sh` while developing; the stand-down wiring for all six workflow extensions is asserted by `bench/replay/test-dory-standdown.mjs`.
 
 ---
 

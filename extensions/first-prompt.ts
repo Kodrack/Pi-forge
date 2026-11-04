@@ -12,6 +12,16 @@ import * as path from "path";
 import * as os from "os";
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
+const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
+
+// AGENTS.md is the EXECUTOR's workflow contract (_state.md-first, plan-then-code,
+// skeleton+edit). Dory's chat/plan/respond jobs neither write code nor keep
+// .think/ state, and their prompt already carries its own persona — attaching
+// the contract there made the 2026-07-25 T-006 plan job copy the whole
+// attachment into the brief it produced, and follow it into implementation.
+// Kinds dispatched by dory.mjs: chat | respond | plan | exec (exec = executor,
+// which DOES want the contract).
+const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
 
 // The PiForge workflow contract lives at ~/.pi/agent/AGENTS.md
 // (copied there by install.sh, symlinked to the repo by dev-link.sh).
@@ -70,12 +80,34 @@ function isEnabled(): boolean {
   }
 }
 
+// The Dory stage this session runs, or null. DORY_STAGE (env) for headless
+// `pi -p` jobs, dory-runner.json for in-session /dory jobs (dory-mode.ts cannot
+// set env vars on its own process) — honored only when `pid` matches, since that
+// file is one global slot shared by every Pi process on the machine.
+function doryReadonlyStage(): string | null {
+  let kind: string | null = process.env.DORY_STAGE ? String(process.env.DORY_STAGE) : null;
+  if (!kind) {
+    try {
+      const state = JSON.parse(fs.readFileSync(DORY_RUNNER_STATE, "utf-8"));
+      kind = state?.running && state?.job?.kind && state.pid === process.pid ? String(state.job.kind) : null;
+    } catch {
+      kind = null;
+    }
+  }
+  return kind !== null && DORY_READONLY_KINDS.includes(kind) ? kind : null;
+}
+
 export default function (pi: ExtensionAPI) {
   let fired = false;
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isEnabled()) {
       ctx.ui.notify("first-prompt disabled (use /piforge enable first-prompt to activate)", "info");
+      return;
+    }
+    const doryStage = doryReadonlyStage();
+    if (doryStage) {
+      ctx.ui.notify(`first-prompt: skipped (dory ${doryStage} stage — the job prompt carries its own persona)`, "info");
       return;
     }
     const agentsMd = readAgentsMd();
@@ -88,6 +120,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", (event) => {
     if (!isEnabled() || fired) return { action: "continue" as const };
+    // Checked per input, not cached from session_start: a /dory job may attach
+    // to a session that started before the runner picked the job up.
+    if (doryReadonlyStage()) return { action: "continue" as const };
     fired = true;
 
     const original = (event as any).text ?? "";
