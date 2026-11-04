@@ -29,6 +29,8 @@ const TOGGLEABLE = [
   { name: "acceptance-guard",   description: "Runs .think/_acceptance.sh at completion; blocks Status: complete unless it exits 0 (supersedes execution-guard)" },
   { name: "progress-checkpoint", description: "On a stalled session (no file changes), demands \"done\" or a concrete next action — hands off to you after 2 ignored" },
   { name: "done-nudge",         description: "Suggests declaring completion after repeated executions with no source changes" },
+  { name: "deep-research",      description: "/research <topic> — multi-round web research (decompose → search → gap-check → sourced report)" },
+  { name: "code-research",      description: "/ask <question> + code_research tool — deep codebase investigation with file:line-cited report" },
   { name: "distill",            description: "/distill command + distill_codebase tool" },
   { name: "distill-query",      description: "/l1 /l2 /l3 direct level queries" },
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
@@ -38,6 +40,7 @@ const TOGGLEABLE = [
   { name: "project-jail",       description: "Blocks file mutations outside the project root (cwd) — write/edit/bash confined to the project" },
   { name: "dory-mode",          description: "/dory — turn this Pi session into Dory (persona + dory_board tool for the kanban)" },
   { name: "dory-plan-guard",    description: "Keeps Dory's chat/plan/respond jobs read-only and stops them once the marker block is out" },
+  { name: "lmstudio-console",   description: "/lmstudio — list/load/unload models on the LM Studio server (interactive console)" },
 ];
 
 function readConfig(): { disabled: string[] } {
