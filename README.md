@@ -534,6 +534,7 @@ piforge/
 │   ├── distill-awareness.ts            ← session-start awareness (off by default)
 │   ├── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction
 │   ├── session-manager.ts             ← per-tab .think/ isolation via symlinks
+│   ├── lmstudio-console.ts            ← /lmstudio: list/load/unload models on the LM Studio server
 │   └── queue.ts                       ← /q "message" — post-completion task queue
 ├── knowledge/                          ← copy to your project's knowledge/ folder
 │   ├── svelte5-gotchas.md              ← Svelte 5 runes failure patterns
