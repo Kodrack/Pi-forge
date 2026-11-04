@@ -54,6 +54,9 @@ const FAIL_COOLDOWN_MS = 5 * 60 * 1000;  // don't hot-loop a failing job
 const RUNNER_FRESH_MS = 35 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
+// Top-level sections of dory-persona.md (one per job kind that uses a persona).
+const PERSONA_SECTIONS = ["Chat", "Plan", "Revise"];
+
 // Ingest persona is short enough to live here; the per-column personas are
 // the bigger, more tunable ones and live in organizer/dory-persona.md.
 const INGEST_PROMPT = `You are Dory, a software project organizer. Below is a raw requirements
@@ -168,7 +171,10 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       if (fs.existsSync(p)) { raw = fs.readFileSync(p, "utf-8"); break; }
     }
     if (!raw) throw new Error("dory-persona.md not found next to the board install");
-    const part = between(raw, `\n## ${section}\n`, ["\n## "]);
+    // End at the next PERSONA header only. A bare "\n## " also matches the
+    // headings inside the brief template (## Purpose, ## Plan (small steps…)),
+    // which used to cut the Plan persona off before its TEST format and rules.
+    const part = between(raw, `\n## ${section}\n`, PERSONA_SECTIONS.filter((n) => n !== section).map((n) => `\n## ${n}\n`));
     if (!part) throw new Error(`persona section "## ${section}" missing in dory-persona.md`);
     return part;
   }
