@@ -216,9 +216,8 @@ const DEFAULT_ENGINE: Engine = IS_APPLE_SILICON ? "parakeet" : "moonshine";
 //
 // This used to be a hardcoded ":0" — "the default mic". avfoundation indices are
 // not stable: they are positions in an enumeration that changes whenever an audio
-// device is added or removed. Installing a virtual audio device (BlackHole,
-// Loopback, an Aggregate/Multi-Output, etc.) can insert it at index 0 and push
-// the real mic to 1, so voice-input starts recording a
+// device is added or removed. Installing BlackHole for meeting-scribe inserted it
+// at index 0 and pushed the real mic to 1, so voice-input started recording a
 // virtual loopback device. That fails in the worst possible way — BlackHole
 // carries system audio, so with nothing playing it yields perfectly valid SILENT
 // audio. Segments were produced (no "check mic permission" error) and the

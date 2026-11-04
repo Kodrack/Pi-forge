@@ -13,7 +13,7 @@ PI_DIR="$HOME/.pi/agent"
 mkdir -p "$PI_DIR/extensions" "$PI_DIR/skills/incremental-codegen"
 
 echo "Linking extensions → repo (live edits)..."
-for f in "$PIFORGE_DIR/extensions/"*.ts; do
+for f in "$PIFORGE_DIR/extensions/"*.ts "$PIFORGE_DIR/extensions/"*.py; do
   [ -e "$f" ] || continue
   base="$(basename "$f")"
   ln -sfn "$f" "$PI_DIR/extensions/$base"

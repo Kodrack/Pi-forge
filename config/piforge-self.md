@@ -32,6 +32,7 @@
 - `/important -compact "note"` — same + force compaction after
 - `/q "message"` — queue work for after you finish
 - `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech; audio is chunked every 30s and each chunk's transcript streams into their input box while they keep talking)
+- `/scribe [setup|start|stop|status]` — record a call and transcribe it locally with speaker labels. Captures system audio (via the BlackHole virtual device) and the user's mic as two streams, both split by voice into `Speaker 1/2/3…`; whichever voice dominates the mic is relabelled `Me` when recording stops. Appends to `.think/meetings/<timestamp>.md` while the call runs — if the user asks about something said on a call, read that file
 - `/guide` — load this PiForge guide
 
 ### Knowledge files

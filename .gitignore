@@ -5,3 +5,9 @@ node_modules/
 .think-sessions/
 knowledge/*
 !knowledge/.gitkeep
+__pycache__/
+
+# Meeting Scribe app build artifacts (the .app itself builds to ~/Library/Caches/MeetingScribe)
+scribe-app/build/
+scribe-app/dist/
+scribe-app/meeting_scribe/vendor/scribe_core.py

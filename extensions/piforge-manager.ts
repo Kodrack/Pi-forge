@@ -34,6 +34,7 @@ const TOGGLEABLE = [
   { name: "explore",            description: "/explore + explore_codebase tool (superseded by distill-query)" },
   { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
   { name: "voice-input",        description: "Push-to-talk voice input (è key), local STT via parakeet or moonshine" },
+  { name: "meeting-scribe",     description: "/scribe — records a call (BlackHole + mic) to a speaker-labelled transcript, fully local" },
   { name: "project-jail",       description: "Blocks file mutations outside the project root (cwd) — write/edit/bash confined to the project" },
 ];
 

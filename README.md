@@ -147,6 +147,45 @@ Why a venv and not Docker: Docker on macOS can't access the Apple Silicon GPU, s
 
 The trigger is the bare `è` key (intercepted via a custom editor component — Pi's shortcut system is ASCII-only). Trade-off: you can't *type* è into the prompt anymore (pasting è still works, é is unaffected). Change `TRIGGER_KEY` to any other single character if that bites.
 
+### Meeting scribe (local call transcription with speaker labels)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `meeting-scribe.ts` | `/scribe start` records a call — system audio (Teams, Zoom, Meet, anything) **and** your mic as two separate streams — and appends a speaker-labelled transcript to `.think/meetings/<timestamp>.md` while the call runs. `/scribe stop` drains the tail and prints the path. Fully local, nothing leaves the machine | on |
+
+```
+/scribe setup            # install deps + models, check the audio route
+/scribe start            # begin recording  (--no-mic = far end only)
+/scribe status           # elapsed, lines so far, speakers seen
+/scribe stop             # finish, drain, print the transcript path
+```
+
+**Two streams, one identity space.** macOS cannot record its own output, so system audio is captured through the [BlackHole](https://existential.audio/blackhole/) virtual device and the mic is captured separately. Both streams are diarized against a **shared** centroid store, so a person keeps one label whichever stream carries them — no assumption is made that the mic hears exactly one person, which means an in-person meeting or a speakerphone is separated just like a call. Whichever voice was heard mostly on the mic (more mic time than system time) is relabelled `Me` when you stop, and the transcript is rewritten in place; live lines say `Speaker N` because that judgement needs the whole meeting.
+
+> An earlier version hard-labelled everything on the mic as `Me` with no analysis. Playing a two-host podcast through the laptop speakers put it on the *mic*, so the whole thing was attributed to the user and the diarizer never ran at all. Hence: diarize both, decide `Me` from evidence.
+
+**Speaker identity across a long call.** Each 30s chunk is diarized independently with the pyannote segmentation model (which finds speaker *changes* — plain VAD only finds speech vs silence, so back-to-back speakers land in one segment and their blended voiceprint is useless). Each chunk-local speaker is then linked to a global identity by cosine-matching its mean embedding against **running centroids**, which is what keeps `Speaker 2` the same person in minute 1 and minute 40.
+
+| Model | Role |
+|---|---|
+| Parakeet TDT 0.6B v3 (MLX) | transcription — shared with `voice-input`, same `~/.pi/stt-venv` |
+| pyannote segmentation 3.0 (ONNX, 5.7MB) | speaker-change detection within a chunk |
+| NeMo TitaNet-small (ONNX, 38MB) | speaker embeddings for global identity linking |
+
+Measured against real 4-speaker audio, the online chunked pipeline reproduced offline global clustering **100%** at the shipped thresholds (`LINK_THRESHOLD` 0.5, `LOCAL_THRESHOLD` 0.6); TitaNet beat eres2net (87%) and campplus. Throughput is ~5× realtime on Apple Silicon, so an hour-long call keeps up live and only a short tail drains after `/scribe stop`. Length is unbounded — chunks are transcribed and deleted as they finalize, so memory stays flat and the transcript is on disk continuously (kill the terminal mid-call and everything up to that point survives). Raise `LINK_THRESHOLD` if one person gets split in two, lower it if two people get merged.
+
+One-time setup, which needs your password and so cannot be automated:
+
+```
+brew install --cask blackhole-2ch
+# Audio MIDI Setup → + → Create Multi-Output Device → tick your headphones AND BlackHole 2ch
+# During calls, select that Multi-Output Device as the system output
+```
+
+`/scribe setup` checks all three steps and reports which is missing. Note that everything routed to BlackHole is captured — that's *all* system audio, not just the call, so mute anything else making noise. Recording calls is regulated in the EU and in two-party-consent US states; whether you may record a given call is on you.
+
+Unlike `voice-input`, this one runs a resident worker for the duration of the meeting (models stay loaded so per-chunk cost is inference only); it is spawned by `/scribe start` and killed by `/scribe stop`, so nothing runs between meetings.
+
 ### Session isolation (per-tab `.think/`)
 
 | Extension | What it does | Default |

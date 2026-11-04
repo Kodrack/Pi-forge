@@ -34,6 +34,15 @@ for f in "$PIFORGE_DIR/extensions/"*.ts; do
   cp "$f" "$PI_DIR/extensions/$base"
   echo "    ~/.pi/agent/extensions/$base"
 done
+# Sidecar helpers an extension spawns as a subprocess (meeting-scribe's python
+# STT/diarization worker). Pi ignores non-.ts files here; the extension resolves
+# them relative to itself.
+for f in "$PIFORGE_DIR/extensions/"*.py; do
+  [ -e "$f" ] || continue
+  base="$(basename "$f")"
+  cp "$f" "$PI_DIR/extensions/$base"
+  echo "    ~/.pi/agent/extensions/$base"
+done
 echo "✓ Extensions installed"
 
 # ---------- 4. Copy piforge guide ----------
