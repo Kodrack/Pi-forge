@@ -21,7 +21,7 @@ const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runn
 // attachment into the brief it produced, and follow it into implementation.
 // Kinds dispatched by dory.mjs: chat | respond | plan | exec (exec = executor,
 // which DOES want the contract).
-const DORY_READONLY_KINDS = ["chat", "plan", "respond", "wave"];
+const DORY_READONLY_KINDS = ["research", "chat", "plan", "respond", "wave"];
 
 // The PiForge workflow contract lives at ~/.pi/agent/AGENTS.md
 // (copied there by install.sh, symlinked to the repo by dev-link.sh).

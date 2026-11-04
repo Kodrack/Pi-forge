@@ -4,6 +4,10 @@
 // column it sits in. tick() (polled by server.mjs) scans columns in priority
 // order and performs ONE job at a time:
 //
+//   RESEARCH any card flagged research_requested (the 🔎 button, any column but
+//           in_progress) → read-only job with web_search: rewrite the card's
+//           title + description IN PLACE from what the web says (original kept
+//           in the conversation, sources posted). The card doesn't move.
 //   REPLY   any card (except in_progress) whose last conversation message is
 //           human → planless cards get a chat answer; plan-bearing cards route
 //           through the responder, which answers questions conversationally
@@ -66,15 +70,16 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 // the human, exactly like a normal card.
 const LH_DEFAULTS = { autonomy: "review", max_subtasks_per_wave: 4, max_waves: 5, max_subtasks_total: 15 };
 const HANDOFF_CONTEXT_MAX = 6000;   // chars of earlier handoffs fed into a subtask/wave prompt
-const MAX_SPLIT_REJECTS = 2;        // a subtask answering with GOAL this often → blocked (depth limit)
+const MAX_SPLIT_REJECTS = 2;
+const MAX_RESEARCH_FAILURES = 3;     // then the request is dropped and the human told        // a subtask answering with GOAL this often → blocked (depth limit)
 const CHANGED_FILES_MAX = 40;
 // Top-level sections of dory-persona.md (one per job kind that uses a persona).
-const PERSONA_SECTIONS = ["Chat", "Plan", "Revise", "Revise goal", "Wave"];
+const PERSONA_SECTIONS = ["Research", "Chat", "Plan", "Revise", "Revise goal", "Wave"];
 const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", ".venv", "__pycache__"]);
 
 // Which cooldown bucket a job kind uses ("reply" covers chat + respond).
 function cooldownKey(kind) {
-  return kind === "exec" ? "exec" : kind === "plan" ? "plan" : kind === "wave" ? "wave" : "reply";
+  return kind === "exec" ? "exec" : kind === "plan" ? "plan" : kind === "wave" ? "wave" : kind === "research" ? "research" : "reply";
 }
 
 // Ingest persona is short enough to live here; the per-column personas are
@@ -538,6 +543,10 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   // ── prompt builders (shared by headless + runner modes) ──────────────────
 
+  function buildResearchPrompt(task) {
+    return `${persona("Research")}\n\n${cardHeader(task)}`;
+  }
+
   function buildChatPrompt(task) {
     return `${persona("Chat")}\n\n${cardHeader(task)}`;
   }
@@ -612,6 +621,58 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   }
 
   // ── result handlers (shared by headless + runner modes) ───────────────────
+
+  // Research: the card's title/description are rewritten IN PLACE from what Dory
+  // found on the web. The ORIGINAL text is quoted in her message, so nothing the
+  // human wrote is lost. The card stays in its column.
+  function handleResearchResult(task, out, meta) {
+    const title = between(out, "<<<TITLE>>>", ["<<<DESCRIPTION>>>", "<<<SOURCES>>>", "<<<REPLY>>>", "<<<END>>>"]);
+    const description = between(out, "<<<DESCRIPTION>>>", ["<<<SOURCES>>>", "<<<REPLY>>>", "<<<END>>>"]);
+    const sources = between(out, "<<<SOURCES>>>", ["<<<REPLY>>>", "<<<END>>>"]);
+    const reply = between(out, "<<<REPLY>>>", ["<<<END>>>"]);
+    if (meta.failed || !description) {
+      cooldown.set(`research:${task.id}`, Date.now());
+      fs.writeFileSync(path.join(TMP_DIR, `research-failed-${task.id}.txt`), out ?? "");
+      let failures = 0;
+      withTask(task.id, (t) => {
+        failures = t.research_failures = (t.research_failures ?? 0) + 1;
+        if (failures >= MAX_RESEARCH_FAILURES) delete t.research_requested;
+      }, `${task.id} research failed (dory)`);
+      diary(`research ${task.id} FAILED ${failures}x (${meta.detail ?? "no DESCRIPTION block"})`);
+      noteTask(
+        task.id,
+        failures >= MAX_RESEARCH_FAILURES
+          ? `web research failed ${failures} times — gave up; press 🔎 Research to try again (raw output in .dory-tmp/research-failed-${task.id}.txt)`
+          : `web research failed — will retry in 5 minutes (raw output in .dory-tmp/research-failed-${task.id}.txt)`
+      );
+      return;
+    }
+    const newTitle = (title ?? "").split("\n")[0].trim().slice(0, 200) || task.title;
+    const before = { title: task.title, notes: (task.notes ?? "").trim() };
+    const hadPlan = !!task.brief && !isGoal(task);
+    const goalOutline = isGoal(task) && !((task.wave ?? 0) > 0);
+    withTask(task.id, (t) => {
+      t.title = newTitle;
+      t.notes = description.trim();
+      t.researched = new Date().toISOString();
+      delete t.research_requested;
+      delete t.research_failures;
+    }, `${task.id} researched in place (dory)`);
+    say(
+      task.id,
+      `${reply ? reply.trim() + "\n\n" : ""}I searched the web and rewrote this card.\n\n` +
+        `Title: ${newTitle}${newTitle !== before.title ? `\n(was: ${before.title})` : " (unchanged)"}\n\n` +
+        `Sources:\n${sources?.trim() || "(none listed)"}\n\n` +
+        `Your original description:\n${before.notes ? before.notes.split("\n").map((l) => `> ${l}`).join("\n") : "> (empty)"}\n\n` +
+        (hadPlan
+          ? `This card already has a plan, written for the OLD description. Reply "replan" and I'll revise it, or drag the card to Plan Queue to plan it fresh.`
+          : goalOutline
+            ? `This goal's outline was written for the OLD description. Reply "update the outline" and I'll revise it before you approve.`
+            : `Reply here to adjust it.`),
+      `${task.id} research posted (dory)`
+    );
+    diary(`researched ${task.id} in place (${task.status})`);
+  }
 
   function handleChatResult(task, out, meta) {
     const reply = between(out, "<<<REPLY>>>", ["<<<END>>>"]) || out.trim().slice(-3000);
@@ -874,15 +935,16 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return Date.now() - lastRunnerPoll < RUNNER_FRESH_MS;
   }
 
-  const HANDLERS = { chat: handleChatResult, respond: handleRespondResult, plan: handlePlanResult, wave: handleWaveResult, exec: handleExecResult };
+  const HANDLERS = { research: handleResearchResult, chat: handleChatResult, respond: handleRespondResult, plan: handlePlanResult, wave: handleWaveResult, exec: handleExecResult };
   const HEADLESS_ARGS = {
+    research:(cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     chat:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     respond: (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     plan:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     wave:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     exec:    () => ["--no-session"], // executor: full tool set + guard stack
   };
-  const TIMEOUTS = { chat: CHAT_TIMEOUT_MS, respond: PLAN_TIMEOUT_MS, plan: PLAN_TIMEOUT_MS, wave: PLAN_TIMEOUT_MS, exec: EXEC_TIMEOUT_MS };
+  const TIMEOUTS = { research: PLAN_TIMEOUT_MS, chat: CHAT_TIMEOUT_MS, respond: PLAN_TIMEOUT_MS, plan: PLAN_TIMEOUT_MS, wave: PLAN_TIMEOUT_MS, exec: EXEC_TIMEOUT_MS };
 
   async function dispatch(kind, task, prompt, meta = {}) {
     const cfg = config();
@@ -1178,6 +1240,18 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         return;
       }
 
+      // 2b. web research — cards whose 🔎 button was pressed, in any column but
+      //     in_progress (read-only job; needs no dispatch switch, like planning).
+      const toResearch = board.tasks.find(
+        (t) => t.research_requested && t.status !== "in_progress" && !coolingDown(`research:${t.id}`)
+      );
+      if (toResearch) {
+        busy = false;
+        activity = `researching ${toResearch.id} on the web…`;
+        await dispatch("research", toResearch, buildResearchPrompt(toResearch));
+        return;
+      }
+
       // 3. planning queue — JUST IN TIME: a card is planned only once the cards it
       //    depends on are done, so it's planned against code that exists. (Goal
       //    subtasks need this; it also stops ingest from planning everything at once.)
@@ -1237,7 +1311,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     // Reactive board: a human touching a card (move, message, create) means
     // "react NOW" — clear its failure cooldowns and tick immediately.
     wake: (taskId) => {
-      if (taskId) for (const job of ["reply", "plan", "exec", "wave", "goal"]) cooldown.delete(`${job}:${taskId}`);
+      if (taskId) for (const job of ["reply", "plan", "exec", "wave", "goal", "research"]) cooldown.delete(`${job}:${taskId}`);
       setImmediate(() => void tick());
     },
   };

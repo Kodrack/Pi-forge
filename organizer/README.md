@@ -37,6 +37,16 @@ You can drag any card to any column (except In Progress) — cards carry no
 workflow state, so wherever a card lands, Dory does that column's job with
 whatever the card contains. Old 5-column boards are migrated automatically.
 
+**🔎 Research, on any card.** The card's detail panel has a **🔎 Research**
+button (or tick *research first* when creating a card). Dory runs a read-only
+job with `web_search` (1–3 searches: current versions, recommended approach,
+pitfalls) and rewrites the card's **title and description in place**; her
+message lists the sources and quotes your original text, so nothing you wrote
+is lost. The card doesn't move. If it already has a plan (or a goal outline),
+she says the plan was written for the old description and suggests replanning.
+Not available while a card is In Progress. A failed attempt retries after 5
+minutes; after 3 failures the request is dropped and you're told.
+
 ## Board (`board/`)
 
 A zero-dependency kanban UI over `tasks.json` in the mind repo.
@@ -62,7 +72,8 @@ git-initializing it on first use) and opens the page. Override with
 - Illegal state transitions are rejected by the server (409 + allowed moves).
 
 API: `GET /api/board` · `POST /api/ingest` · `POST /api/tasks` (with initial
-`status`: chat | plan_queue | approved) · `POST /api/tasks/:id/message` ·
+`status`: chat | plan_queue | approved, optional `research: true`) ·
+`POST /api/tasks/:id/message` · `POST /api/tasks/:id/research` ·
 `GET /api/tasks/:id/detail` · `POST /api/tasks/:id/move` · `PATCH /api/tasks/:id` ·
 `DELETE /api/tasks/:id` · `POST /api/dispatch` · `GET /api/events` (SSE).
 See the header comment in `board/server.mjs` for payloads.
@@ -76,9 +87,10 @@ task's `tasks/T-NNN.md` + `tests/T-NNN.sh` files, strips it from other tasks'
 
 Runs **inside the board server** — launching the board launches Dory. One job
 per 5s tick, priority: replies (chat + plan revisions) → goals (start a wave,
-run the goal test, plan the next wave) → execution → planning → pickup.
+run the goal test, plan the next wave) → execution → 🔎 research → planning →
+pickup.
 All LLM work via `pi` subprocesses; personas live in `dory-persona.md`
-(`## Chat`, `## Plan`, `## Revise`, `## Revise goal`, `## Wave` sections).
+(`## Research`, `## Chat`, `## Plan`, `## Revise`, `## Revise goal`, `## Wave` sections).
 
 **Goals: long tasks in waves** (design + rationale: `LONG-HORIZON.md`). When a
 card is too big for one executor run, the plan job answers with a **goal**
@@ -119,7 +131,7 @@ your approval.
 once the cards it `depends_on` are Done (before, cards from 📥 ingest were all
 planned at once, against code that didn't exist yet).
 
-**Dory's own stages are read-only.** A chat/plan/revise/wave job's entire deliverable
+**Dory's own stages are read-only.** A research/chat/plan/revise/wave job's entire deliverable
 is the marker block the engine parses out of its final message — it writes no
 files, and the *executor* (a separate session dispatched from Approved) is what
 implements the card. Headless jobs get that from `--tools read,bash,web_search`;

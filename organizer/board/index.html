@@ -101,6 +101,11 @@
                    display: flex; align-items: center; gap: 10px; }
   #drawer .dhead .id { color: var(--dim); font-family: ui-monospace, monospace; font-size: 12px; }
   #drawer .dhead .dtitle { font-weight: 600; flex: 1; }
+  #drawer .dhead .research { background: var(--card); border: 1px solid var(--line); color: var(--text);
+                             border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  #drawer .dhead .research:hover:not(:disabled) { border-color: var(--accent); }
+  #drawer .dhead .research:disabled { opacity: .55; cursor: default; }
+  footer .research-first { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
   #drawer .dhead .close { background: none; border: 0; color: var(--dim);
                    font-size: 18px; cursor: pointer; }
   #drawer .dbody { flex: 1; overflow-y: auto; padding: 12px 16px; }
@@ -195,6 +200,7 @@
       <option value="2">P2</option>
       <option value="3" selected>P3</option>
     </select>
+    <label class="research-first" title="Dory web-researches the card first and rewrites its title + description"><input type="checkbox" id="newResearch"> 🔎 research first</label>
     <button id="addBtn">Add</button>
   </footer>
 
@@ -202,6 +208,7 @@
     <div class="dhead">
       <span class="id" id="dId"></span>
       <span class="dtitle" id="dTitle"></span>
+      <button class="research" id="dResearch" title="Dory searches the web and rewrites this card's title and description with what she finds. The card stays in its column.">🔎 Research</button>
       <button class="close" id="dClose" title="Close">✕</button>
     </div>
     <div class="dbody">
@@ -310,6 +317,7 @@ function render() {
           <span class="id">${t.id}</span>
           <span class="prio p${t.priority}">P${t.priority}</span>
           ${goal ? `<span class="goal-badge" title="A big piece of work Dory splits into waves of subtasks">Goal</span>` : ""}
+          ${t.research_requested ? `<span title="Dory will web-research this card">🔎</span>` : ""}
           ${t.parent ? `<span class="parent" data-goal="${t.parent}" title="Open the goal this subtask belongs to">↳ ${t.parent}${t.wave ? ` · wave ${t.wave}` : ""}</span>` : ""}
         </div>
         <div class="title"></div>
@@ -363,6 +371,16 @@ function render() {
 }
 
 /* ── drawer ── */
+document.getElementById("dResearch").addEventListener("click", async () => {
+  if (!openTaskId) return;
+  try {
+    await api(`/api/tasks/${openTaskId}/research`, { method: "POST", body: { by: "human" } });
+    toast("Dory will research this card on the web");
+  } catch (err) { toast(err.message); }
+  await loadDrawer();
+  refresh();
+});
+
 async function openDrawer(id) {
   openTaskId = id;
   document.getElementById("drawer").classList.add("open");
@@ -381,6 +399,12 @@ async function loadDrawer() {
   catch { closeDrawer(); return; } // deleted
   document.getElementById("dId").textContent = t.id;
   document.getElementById("dTitle").textContent = t.title;
+  const rb = document.getElementById("dResearch");
+  rb.disabled = t.status === "in_progress" || !!t.research_requested;
+  rb.textContent = t.research_requested ? "🔎 Researching…" : "🔎 Research";
+  rb.title = t.status === "in_progress"
+    ? "Not while the card is being built — research it after it leaves In Progress"
+    : "Dory searches the web and rewrites this card's title and description with what she finds. The card stays in its column.";
   document.getElementById("dNotesWrap").style.display = t.notes ? "" : "none";
   document.getElementById("dNotes").textContent = t.notes || "";
   const thread = document.getElementById("dThread");
@@ -449,9 +473,11 @@ async function addTask() {
       title,
       status: document.getElementById("newCol").value,
       priority: Number(document.getElementById("newPrio").value),
+      research: document.getElementById("newResearch").checked,
       by: "human",
     }});
     input.value = "";
+    document.getElementById("newResearch").checked = false;
     if (t.status === "chat") openDrawer(t.id); // start talking right away
   } catch (err) { toast(err.message); }
   refresh();

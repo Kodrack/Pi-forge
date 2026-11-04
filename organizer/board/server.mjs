@@ -15,8 +15,10 @@
 // API:
 //   GET    /api/board                → full tasks.json (+ live dory activity)
 //   POST   /api/dispatch             {on: bool, by?} — master switch the daemon honors
-//   POST   /api/tasks                {title, status? (chat|plan_queue|approved), priority?, notes?, ...}
+//   POST   /api/tasks                {title, status? (chat|plan_queue|approved), priority?, notes?, research?, ...}
 //   POST   /api/tasks/:id/message    {text, by?} — append to the card's conversation
+//   POST   /api/tasks/:id/research   ask Dory to web-research the card (title +
+//                                    description updated in place; not while in_progress)
 //   GET    /api/tasks/:id/detail     → task + plan/test file contents (drawer UI)
 //   POST   /api/tasks/:id/move       {to, by?}   — free movement, in_progress is daemon-only
 //   PATCH  /api/tasks/:id            {title?, priority?, notes?, test_cmd?, depends_on?}
@@ -217,7 +219,8 @@ async function handleApi(req, res, url) {
     if (!body.title || typeof body.title !== "string") return send(res, 400, { error: "title required" });
     const board = loadBoard();
     const task = createTask(board, body, body.by || "human");
-    saveBoard(board, `${task.id} created (${task.history[0].by})`);
+    if (body.research === true) task.research_requested = new Date().toISOString();
+    saveBoard(board, `${task.id} created (${task.history[0].by})${task.research_requested ? " + research requested" : ""}`);
     dory.wake(task.id);
     return send(res, 201, task);
   }
@@ -237,6 +240,22 @@ async function handleApi(req, res, url) {
       task.conversation.push({ at: now, by: body.by === "dory" ? "dory" : "human", text: body.text.trim() });
       task.updated = now;
       saveBoard(board, `${task.id} message (${body.by || "human"})`);
+      dory.wake(task.id);
+      return send(res, 200, task);
+    }
+
+    // Web research on demand, in any column: the card stays where it is; Dory's
+    // research job updates its title/description and posts the sources.
+    if (req.method === "POST" && parts[3] === "research") {
+      if (task.status === "in_progress") {
+        return send(res, 409, { error: `${task.id} is being built right now — research it after it leaves In Progress` });
+      }
+      if (!task.research_requested) {
+        task.research_requested = new Date().toISOString();
+        delete task.research_failures;
+        task.updated = task.research_requested;
+        saveBoard(board, `${task.id} research requested (human)`);
+      }
       dory.wake(task.id);
       return send(res, 200, task);
     }

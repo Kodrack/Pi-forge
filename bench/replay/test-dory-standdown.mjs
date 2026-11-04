@@ -30,7 +30,7 @@ const WORKFLOW_EXTENSIONS = [
 ];
 
 // "wave" (planning a goal's next wave) is the fourth marker-only stage.
-const READONLY_KINDS = ["chat", "plan", "respond", "wave"];
+const READONLY_KINDS = ["research", "chat", "plan", "respond", "wave"];
 const checks = [];
 
 for (const file of WORKFLOW_EXTENSIONS) {

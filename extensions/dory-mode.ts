@@ -51,8 +51,10 @@ const POLL_MS = 10000;
 const RUNNER_STATE_PATH = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 // The orchestrator parses plan/exec output with indexOf, i.e. the FIRST marker
 // block wins. If the model produced more than one deliverable (a retry), keep the
-// newest: a plan's BRIEF or GOAL block, else a wave's SUBTASKS/STUCK block.
-const DELIVERABLE_MARKERS = [["<<<BRIEF>>>", "<<<GOAL>>>"], ["<<<SUBTASKS>>>", "<<<STUCK>>>"]];
+// newest: a plan's BRIEF or GOAL block, else a wave's SUBTASKS/STUCK block,
+// else a research job's block — from its TITLE (the block's first marker; a
+// TITLE-less answer falls back to DESCRIPTION).
+const DELIVERABLE_MARKERS = [["<<<BRIEF>>>", "<<<GOAL>>>"], ["<<<SUBTASKS>>>", "<<<STUCK>>>"], ["<<<TITLE>>>"], ["<<<DESCRIPTION>>>"]];
 
 type RunnerJob = { id: string; kind: string; taskId: string };
 
