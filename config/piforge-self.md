@@ -33,6 +33,8 @@
 - `/important "note"` — persistent note (saved to _purpose.md, survives compaction)
 - `/important -compact "note"` — same + force compaction after
 - `/q "message"` — queue work for after you finish
+- `/research "topic" [--rounds N]` — deep multi-round web research, runs as a coded pipeline (decompose → search per sub-question → gap-check → follow-up round). You receive ONLY the final sourced report as a steer message; findings with source URLs live in `.think/research/<topic>/`. Use for topics too broad for one `web_search()`; don't re-search what the report already covers
+- `/ask "question" [--rounds N]` — the same pipeline over the CODEBASE: searches the code per sub-question, follows identifier chains across rounds, reports with file:line citations to `.think/code-research/<q>/`. You can also call it yourself as the `code_research()` tool for multi-file "how does X work" questions — but read directly if you already know the file, and don't re-read files the report covers
 - `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech; audio is chunked every 30s and each chunk's transcript streams into their input box while they keep talking)
 - `/guide` — load this PiForge guide
 

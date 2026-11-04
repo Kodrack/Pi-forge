@@ -133,6 +133,75 @@ Use it BEFORE implementing when:
 - Debugging error messages you don't recognize
 - Anything that might have changed since training
 
+### Deep research (`/research` — a coded procedure, not a prompt)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `deep-research.ts` | `/research <topic>` — multi-round research pipeline: decompose → search per sub-question → gap-check → sourced report. All LLM work in isolated sub-Pis; main context receives only the final report | on |
+
+One `web_search` answers one question. `/research` answers a *topic* — but a small local model can't be trusted to self-drive a multi-round methodology (it loses the plot by round 2). So the pipeline is a **deterministic TypeScript loop** and the model only does the cognitive steps, each as an isolated sub-Pi call:
+
+1. **Decompose** — sub-Pi splits the topic into ≤5 sub-questions, each with a search query → `plan.md`
+2. **Investigate** — per sub-question: SearXNG search → fetch top 3 pages → sub-Pi writes ≤300-word findings with source URLs → `round-1/qN.md`
+3. **Gap-check** — sub-Pi reads all findings, emits up to 3 follow-up queries or `COMPLETE`
+4. **Follow-up rounds** for the gaps (default 2 rounds total, hard cap 3)
+5. **Synthesize** — sub-Pi writes `report.md` (findings by theme, recommendations, open questions, sources), delivered to the main session as a single steer message
+
+The loop, round caps, pacing (6s between searches — engines suspend on bursts), and file layout are code — the model cannot extend or forget them. Interrupted runs resume: existing `plan.md` and findings files are reused. Failed searches/syntheses are skipped, never fatal.
+
+```
+/research "state of local LLM inference on consumer GPUs"
+/research "topic" --rounds 1               # single sweep, no gap-check
+```
+
+Output structure:
+```
+.think/research/<topic-slug>/
+├── plan.md            ← sub-questions + their search queries
+├── round-1/q1.md ...  ← findings per sub-question (query, source URLs, synthesis)
+├── round-2/q1.md ...  ← gap-fill findings (if the gap-check asked for them)
+├── report.md          ← final sourced report (the only thing the main context sees)
+├── research.log       ← append-only pipeline log
+└── tmp/               ← prompt files (auto-cleaned)
+```
+
+Requires the same SearXNG backend as `web-search` (start with `/searxng up` if it's down).
+
+### Codebase research (`/ask` — deep research over your code)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `code-research.ts` | `/ask <question>` + `code_research()` LLM-callable tool — same pipeline as `/research` but grep replaces the web: decompose → search the repo → read matching excerpts in sub-Pis → follow the chain → report with `file:line` citations | on |
+
+The codebase twin of `/research`. Same deterministic loop, different backends:
+
+1. **Decompose** — sub-Pi splits the question into ≤5 sub-questions, each with *code search terms* (identifiers, function names, string literals)
+2. **Locate** *(pure node, no LLM, no shell)* — scans the repo for each term (distill's skip-dirs), ranks files by hits, cuts **line-numbered excerpt windows** (±40 lines) around the matches — never whole files
+3. **Investigate** — per sub-question: one sub-Pi gets the excerpts, writes ≤300-word findings citing **`file:line`** (the evidence chain)
+4. **Gap-check** — the multi-hop step: a sub-Pi spots identifiers the findings mention but never explain ("requests go through `EventBus`") and emits new search terms; the next round greps them and follows the chain
+5. **Report** — answer + file map + open questions → `report.md`, delivered as one steer message
+
+If `.think/distill/` exists it doubles as a **concept index** (L2 preferred, L1 fallback — L1 is what a plain `/distill` produces): a hit in a summary ("caches results in a memo map") pulls in the source file even when the identifiers never match — so concept questions work, not just identifier greps. No distill → grep-only, still works.
+
+**The model picks it automatically**: `code_research()` is a registered tool whose description tells Pi to use it for multi-file "how does X work" questions and NOT when it already knows the file. Fits between the existing tools: `/l2` is single-shot, `/distill --purpose` reads *every* file (hours); `/ask` reads only what the search hit and hops across rounds (minutes, no network).
+
+```
+/ask "how does authentication flow from request to database?"
+/ask "question" --rounds 1                 # quick single sweep
+# OR Pi calls code_research() autonomously
+```
+
+Output structure:
+```
+.think/code-research/<question-slug>/
+├── plan.md            ← sub-questions + their search terms
+├── round-1/q1.md ...  ← findings per sub-question (terms, files consulted, file:line-cited findings)
+├── round-2/q1.md ...  ← chain-following findings (if the gap-check asked)
+├── report.md          ← answer + file map + open questions
+├── research.log       ← append-only pipeline log
+└── tmp/               ← prompt files (auto-cleaned)
+```
+
 ### Voice input (push-to-talk, local STT)
 
 | Extension | What it does | Default |
@@ -444,6 +513,8 @@ piforge/
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
 │   ├── distill.ts                      ← /distill + distill_codebase tool
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
+│   ├── deep-research.ts                ← /research — multi-round research pipeline (coded, not prompted)
+│   ├── code-research.ts                ← /ask + code_research tool — deep research over the codebase
 │   ├── explore.ts                      ← /explore + explore_codebase tool (off by default)
 │   ├── distill-awareness.ts            ← session-start awareness (off by default)
 │   ├── purpose-anchor.ts              ← anti-drift: re-injects purpose after compaction

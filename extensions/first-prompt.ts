@@ -53,6 +53,11 @@ WEB SEARCH: You have web_search(query). Use it BEFORE implementing when:
 - Debugging unfamiliar error messages
 - Anything that may have changed since your training cutoff
 
+CODEBASE QUESTIONS: You have code_research(question). Use it INSTEAD of manual grep/find/ls exploration when:
+- The question spans multiple files you haven't read ("how does X work", "where is Y handled", tracing a flow)
+- You are orienting in an unfamiliar codebase
+It searches, reads the matching files, follows references across rounds, and returns a report with file:line citations — your context never sees the raw files. ONE call per question, not per file. If you already know which file to look at, just read it directly.
+
 FRONTEND/UI TASKS (HTML, CSS, JS with visual output):
 - Implement MAX 2 changes per turn, then OPEN IN BROWSER to verify
 - Before implementing from a spec: check variable names match actual code (loop vars, function params)
