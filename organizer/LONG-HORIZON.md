@@ -13,6 +13,7 @@ list them so the job reads the real code. The code is the reference; there is
 no prose to drift from it. Every card is also **pinned to its project**. Where
 this document says "handoff", read "changed-file pointers". See
 `organizer/README.md` → *Goals* and *Cards are pinned to their project*.
+Planning ahead vs just in time: only goal subtasks wait for their dependencies by default; normal and ingested cards are planned ahead (`config.json` → `jit_planning`).
 
 Decisions taken (§14): Dory writes the first goal test and the human reviews
 it with the outline; subtasks keep their own priority; subtasks are approved

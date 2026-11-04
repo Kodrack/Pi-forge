@@ -174,7 +174,7 @@ const asked = { research_requested: new Date().toISOString() };
   for (let i = 0; i < 40; i++) { try { await call("/api/board"); break; } catch { await new Promise((r) => setTimeout(r, 150)); } }
   const created = await call("/api/tasks", "POST", { title: "with research", status: "chat", research: true });
   check("S create with research:true → card born with the request", created.status === 201 && created.data.research_requested);
-  check("S a new card is pinned to the project Dory is working in", created.data.project === serverProject);
+  check("S a new card is NOT pinned at creation (it's pinned when Dory first works on it)", created.data.project === undefined);
   const plain = await call("/api/tasks", "POST", { title: "plain", status: "plan_queue" });
   const r1 = await call(`/api/tasks/${plain.data.id}/research`, "POST", {});
   check("S POST /research flags a card in any column (Plan Queue), card stays put", r1.status === 200 && r1.data.research_requested && r1.data.status === "plan_queue");

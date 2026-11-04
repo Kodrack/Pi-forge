@@ -21,8 +21,8 @@
 //           → blocked. Bare cards get a quick plan+test at pickup first.
 //   INGEST  (/api/ingest) massive raw text → prd/PRD-NNN.md + one task card
 //           per work item, created in plan_queue.
-//   PROJECT every card is PINNED to the project it was created in (task.project)
-//           and only worked on there. A card that passes its test records the
+//   PROJECT a card is PINNED (task.project) to the current project — where ù was
+//           pressed — when Dory first works on it, and only worked on there. A card that passes its test records the
 //           files it changed (task.changed_files); plans, revisions, waves and
 //           executor runs of related cards (its dependencies, its goal's
 //           subtasks) get those as POINTERS and read the real files: the code
@@ -213,9 +213,11 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   // ── projects + file pointers ──────────────────────────────────────────────
 
-  // The project a card belongs to. A card remembers the project it was created
-  // in (task.project) and is only ever worked on there; cards from before
-  // pinning adopt the current project the first time Dory works on them.
+  // The project a card belongs to. A card is pinned when Dory FIRST works on it
+  // (research, plan or build): it adopts the current project — the folder of the
+  // Pi session where ù was pressed — and is only ever worked on there after
+  // that, so it can't be planned in one folder and built in another. Subtasks
+  // inherit their goal's project.
   // null = the card's project folder no longer exists.
   function projectOf(task, cfg = config()) {
     if (task?.project) return fs.existsSync(task.project) ? task.project : null;
@@ -1102,8 +1104,6 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         priority: [1, 2, 3].includes(item.priority) ? item.priority : 3,
       }, "dory")
     );
-    const ingestProject = workDir(cfg);
-    if (ingestProject) for (const t of created) t.project = ingestProject;
     items.forEach((item, i) => {
       if (Array.isArray(item.depends_on)) {
         created[i].depends_on = item.depends_on
@@ -1296,11 +1296,16 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         return;
       }
 
-      // 3. planning queue — JUST IN TIME: a card is planned only once the cards it
-      //    depends on are done, so it's planned against code that exists. (Goal
-      //    subtasks need this; it also stops ingest from planning everything at once.)
+      // 3. planning queue. Goal SUBTASKS are planned just in time (only once the
+      //    cards they depend on are done, so the plan is written against code that
+      //    exists — waves are designed around that). Normal and ingested cards are
+      //    planned AHEAD by default so the human can review the whole backlog.
+      //    config.json "jit_planning": "subtasks" (default) | "all" | "none".
+      const jit = ["all", "none"].includes(config().jit_planning) ? config().jit_planning : "subtasks";
+      const waitsForDeps = (t) => jit === "all" || (jit === "subtasks" && !!t.parent);
       const toPlan = board.tasks.find(
-        (t) => t.status === "plan_queue" && !(isGoal(t) && (t.wave ?? 0) > 0) && depsCompleted(board, t) && !coolingDown(`plan:${t.id}`)
+        (t) => t.status === "plan_queue" && !(isGoal(t) && (t.wave ?? 0) > 0) &&
+          (!waitsForDeps(t) || depsCompleted(board, t)) && !coolingDown(`plan:${t.id}`)
       );
       if (toPlan) {
         busy = false;

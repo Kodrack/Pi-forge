@@ -290,7 +290,7 @@ const firstPrompt = (env, stage, card) => promptsFor(env, stage, card)[0]?.promp
 }
 
 // =====================================================================
-// I. Normal cards: unchanged flow, and just-in-time planning for plain deps
+// I. Normal cards: planned AHEAD by default (the whole backlog is reviewable)
 // =====================================================================
 {
   const E = makeEnv({ rules: [
@@ -303,11 +303,28 @@ const firstPrompt = (env, stage, card) => promptsFor(env, stage, card)[0]?.promp
   E.patch(second, { depends_on: ["T-001"] });
   await E.tick(); await E.tick();
   check("I normal card: BRIEF → Plan created, not a goal", E.card("T-001").status === "plan_created" && !E.card("T-001").kind);
-  check("I a plain card with an unfinished dependency isn't planned yet (fixes ingest)", promptsFor(E, "plan", "T-002").length === 0);
+  check("I default: a normal card is planned AHEAD even though its dependency isn't built", E.card("T-002").status === "plan_created");
   E.move("T-001", "approved"); E.dispatch(true); await E.tick();
   check("I a normal card that passes records its changed files too", E.card("T-001").status === "done" && JSON.stringify(E.card("T-001").changed_files) === '["one.txt"]');
-  await E.tick();
-  check("I …then the dependent card gets planned, with a pointer to one.txt",
+}
+
+// =====================================================================
+// I2. jit_planning "all": every card waits for its dependencies to be built
+// =====================================================================
+{
+  const E = makeEnv({ rules: [
+    briefPlan("# CARD T-001:", "T-001", "test -f one.txt"),
+    execRule("# T-001 —", { "one.txt": "1" }),
+    briefPlan("# CARD T-002:", "T-002", "test -f two.txt"),
+  ] });
+  E.setConfig({ jit_planning: "all" });
+  E.add({ title: "First", status: "plan_queue" });
+  const second = E.add({ title: "Second", status: "plan_queue" });
+  E.patch(second, { depends_on: ["T-001"] });
+  await E.tick(); await E.tick();
+  check("I2 jit_planning=all: a card with an unbuilt dependency is NOT planned yet", promptsFor(E, "plan", "T-002").length === 0);
+  E.move("T-001", "approved"); E.dispatch(true); await E.tick(); await E.tick();
+  check("I2 …planned once it's built, with a pointer to the files it changed",
     E.card("T-002").status === "plan_created" && firstPrompt(E, "plan", "T-002").includes("- T-001 First: one.txt"));
 }
 

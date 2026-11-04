@@ -129,9 +129,12 @@ wave. Out of budget with the goal test still failing → goal Blocked with the
 last test output. Only `review` autonomy exists today: every subtask waits for
 your approval.
 
-**Cards are pinned to their project.** A card remembers the project it was
-created in (where `ù` was last pressed) and is only planned, researched and
-built there — never in whatever project Dory points at later. If your `/dory`
+**Cards are pinned to their project.** When Dory first works on a card
+(research, plan or build), the card adopts the current project — the folder of
+the Pi session where you pressed `ù` — and from then on is only planned,
+researched and built there, never in whatever project Dory points at later.
+Creating a card doesn't pin it, so you can queue cards first and start `pi` in
+the right folder when work begins. Subtasks inherit their goal's project. If your `/dory`
 session is in another project, the card waits and tells you to press `ù` in its
 project's Pi session; background jobs simply run in the card's own folder. A
 card whose project folder is gone is not run anywhere. The card panel shows
@@ -144,9 +147,12 @@ edits are never credited to it). Plans, revisions, waves and executor runs of
 related cards — its dependencies, its goal's subtasks — get those file
 pointers and read the code. There is no separate journal to drift from it.
 
-**Planning order changed for every card:** a card in Plan Queue is planned only
-once the cards it `depends_on` are Done (before, cards from 📥 ingest were all
-planned at once, against code that didn't exist yet).
+**Planning order.** Normal and 📥 ingested cards are planned **ahead**, in
+order, even if the cards they depend on aren't built yet, so you can review the
+whole backlog. Goal **subtasks** are planned just in time (only once their
+dependencies are Done), because waves are designed around planning against
+code that exists. Change it in `config.json`: `"jit_planning": "subtasks"`
+(default) | `"all"` (every card waits for its dependencies) | `"none"`.
 
 **Dory's own stages are read-only.** A research/chat/plan/revise/wave job's entire deliverable
 is the marker block the engine parses out of its final message — it writes no

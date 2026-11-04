@@ -219,10 +219,6 @@ async function handleApi(req, res, url) {
     if (!body.title || typeof body.title !== "string") return send(res, 400, { error: "title required" });
     const board = loadBoard();
     const task = createTask(board, body, body.by || "human");
-    // Pin the card to the project Dory is working in right now (where ù was
-    // last pressed): it is only ever planned and built there.
-    const project = dory.projectDir();
-    if (project) task.project = project;
     if (body.research === true) task.research_requested = new Date().toISOString();
     saveBoard(board, `${task.id} created (${task.history[0].by})${task.research_requested ? " + research requested" : ""}`);
     dory.wake(task.id);
