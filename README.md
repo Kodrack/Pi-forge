@@ -320,6 +320,8 @@ A plan/chat/revise job's only deliverable is the marker block the board parses �
 | `context-monitor.ts` | No `AGENTS.md`/digest re-injection after compaction; no "write your state files" warn steer (force-compaction still applies) | Same reason as `first-prompt`, but on the compaction path — re-injecting the contract restores the executor's rules mid-job, after `first-prompt` correctly withheld them |
 | `purpose-anchor.ts` | Re-anchors on the **job prompt alone**, with no `.think/` instructions; `_purpose.md` is rewritten per job instead of resumed | The standard re-inject is the `.think/` workflow contract. And `_purpose.md` persists across jobs in one cwd, so a resumed purpose is the *previous* job's assignment |
 
+In **every** Dory job, `exec` included, `acceptance-guard` and `progress-checkpoint` are inert: `dory.mjs` runs the card's own acceptance test and owns the retry loop, so a second oracle would deadlock the board.
+
 Regression fixed 2026-07-25 (card T-006, "website for a CRM"): the plan job emitted a correct brief, then guard steers pushed it into `.think/` writes and on into writing `crm.html` — implementing inside the planning job. Replayed by `bench/replay/test-dory-plan-guard.mjs`.
 
 Regression fixed 2026-07-26 (card T-007, same CRM ask): a `chat` job answered correctly, then compaction re-armed the whole coding harness against it — `context-monitor` re-injected all of `AGENTS.md` ("YOU MUST create `.think/_state.md`") on top of a prompt that says "Never create or modify any file", and `purpose-anchor` re-injected a `_purpose.md` still holding the *chat* job's prompt while the live job was a `plan` job. The model spent its whole reasoning budget reconciling two assignments, and with the card genuinely blocked on user input it re-sent the same no-op edit to `_state.md` seven times. Root cause was an install skew — `~/.pi/agent/extensions/` held pre-stand-down copies, so `dory-plan-guard.ts` wasn't installed at all. Run `bash dev-link.sh` while developing; the stand-down wiring for all six workflow extensions is asserted by `bench/replay/test-dory-standdown.mjs`.
@@ -460,6 +462,9 @@ piforge/
 │   ├── state-guard.ts                  ← blocks reads until _state.md read, forces updates
 │   ├── loop-guard.ts                   ← detects repetition loops + malformed tool calls
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
+│   ├── dory-board.ts                   ← ù or /board: start the Dory board server + open the kanban
+│   ├── dory-mode.ts                    ← /dory: run board jobs in this session (fresh session per job)
+│   ├── dory-plan-guard.ts              ← keeps chat/plan/respond jobs read-only, stops them after the marker block
 │   ├── distill.ts                      ← /distill + distill_codebase tool
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
 │   ├── explore.ts                      ← /explore + explore_codebase tool (off by default)
