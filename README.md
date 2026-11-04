@@ -226,6 +226,21 @@ Why a venv and not Docker: Docker on macOS can't access the Apple Silicon GPU, s
 
 The trigger is the bare `è` key (intercepted via a custom editor component — Pi's shortcut system is ASCII-only). Trade-off: you can't *type* è into the prompt anymore (pasting è still works, é is unaffected). Change `TRIGGER_KEY` to any other single character if that bites.
 
+### LM Studio console (remote model load/unload)
+
+| Extension | What it does | Default |
+|---|---|---|
+| `lmstudio-console.ts` | `/lmstudio` — interactive console over LM Studio's management REST API: pick a model from the server's list (load state, quant, context shown), then load / unload / swap / reload at a different context length. Works against remote instances — the base URL comes from the `lmstudio` provider in `~/.pi/agent/models.json` (override with `LMSTUDIO_URL`) | on |
+
+```
+/lmstudio                     # interactive: select model → load / unload / swap
+/lmstudio status              # print model states, no dialogs
+/lmstudio load <id> [ctx]     # load, optionally at a context length
+/lmstudio unload <id|all>     # unload one model, or everything loaded
+```
+
+Uses `GET /api/v0/models` for state and `POST /api/v1/models/load|unload` for actions — the same API surface LM Studio's own UI uses, so per-model settings configured there still apply to anything the request doesn't specify. "Swap" unloads whatever is currently loaded before loading the target, since two big models rarely fit in VRAM together. Load requests allow up to 10 minutes (a cold 27B takes a while); the footer shows `loading <model>…` while it runs.
+
 ### Session isolation (per-tab `.think/`)
 
 | Extension | What it does | Default |

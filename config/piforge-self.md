@@ -36,6 +36,7 @@
 - `/research "topic" [--rounds N]` — deep multi-round web research, runs as a coded pipeline (decompose → search per sub-question → gap-check → follow-up round). You receive ONLY the final sourced report as a steer message; findings with source URLs live in `.think/research/<topic>/`. Use for topics too broad for one `web_search()`; don't re-search what the report already covers
 - `/ask "question" [--rounds N]` — the same pipeline over the CODEBASE: searches the code per sub-question, follows identifier chains across rounds, reports with file:line citations to `.think/code-research/<q>/`. You can also call it yourself as the `code_research()` tool for multi-file "how does X work" questions — but read directly if you already know the file, and don't re-read files the report covers
 - `/stt [parakeet|moonshine]` — show/switch voice input engine (user presses è to record speech; audio is chunked every 30s and each chunk's transcript streams into their input box while they keep talking)
+- `/lmstudio [status | load <id> [ctx] | unload <id|all>]` — console for the LM Studio server itself: list models with load state/quant/context, load one (optionally at a custom context length), unload, or swap. With no arguments it opens an interactive selector for the user. Loading a big model takes minutes — don't retry while the footer still says `loading …`
 - `/guide` — load this PiForge guide
 
 ### Knowledge files

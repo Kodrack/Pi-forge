@@ -37,6 +37,7 @@ const TOGGLEABLE = [
   { name: "distill-awareness",  description: "Session-start distill context injection (superseded by distill-query)" },
   { name: "voice-input",        description: "Push-to-talk voice input (è key), local STT via parakeet or moonshine" },
   { name: "project-jail",       description: "Blocks file mutations outside the project root (cwd) — write/edit/bash confined to the project" },
+  { name: "lmstudio-console",   description: "/lmstudio — list/load/unload models on the LM Studio server (interactive console)" },
 ];
 
 function readConfig(): { disabled: string[] } {
