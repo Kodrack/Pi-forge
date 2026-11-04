@@ -133,7 +133,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **Scope:** session management only — no LLM interception
 - **Hook:** `session_start` (shows disabled extensions)
 - **What it does:** provides `/piforge` command to list and toggle extensions; reads/writes `~/.pi/piforge.json`
-- **Command:** `/piforge` (status), `/piforge enable <name>`, `/piforge disable <name>`
+- **Command:** `/piforge` (status), `/piforge enable <name>`, `/piforge disable <name>`, `/piforge limits`, `/piforge set <ext>.<key> <value>`, `/piforge reset <ext>.<key>|<ext>|all`
 - **Toggleable extensions:** `first-prompt`, `knowledge-injector`, `plan-clarify`
 
 #### `session-manager.ts`
@@ -592,7 +592,7 @@ The model's training to handle errors kicks in, it parses the message, and retri
 
 ### Tuning
 
-Don't edit the extension to change the limits — the constants at the top of `incremental-guard.ts` are the shipped **defaults**. Override them per machine in `~/.pi/piforge.json`:
+Don't edit the extension to change the limits — the constants at the top of `incremental-guard.ts` are the shipped **defaults**, and an update replaces that file. Override them per machine with `/piforge set incremental-guard.maxLinesPerWrite 200` (see `/piforge limits` for all keys), or by hand in `~/.pi/piforge.json`:
 
 ```json
 {
@@ -994,8 +994,11 @@ cp $(pwd)/config/piforge.json ~/.pi/piforge.json
 
 ```
 /piforge                        — show all toggleable extensions + current status
-/piforge enable knowledge-injector   — enable for this session
-/piforge disable first-prompt        — disable for this session
+/piforge enable knowledge-injector   — enable on this machine
+/piforge disable first-prompt        — disable on this machine
+/piforge limits                      — every tunable limit: active value + default
+/piforge set incremental-guard.maxLinesPerWrite 200   — override a limit on this machine
+/piforge reset incremental-guard.maxLinesPerWrite     — back to default (or: reset incremental-guard | reset all)
 ```
 
 Changes take effect next session, or immediately after `/reload`.
@@ -1220,6 +1223,9 @@ Three real-world prompts tested after full stack was operational:
 | `/piforge` | Show all toggleable extensions + enabled/disabled status |
 | `/piforge enable <name>` | Enable an extension (takes effect next session or after `/reload`) |
 | `/piforge disable <name>` | Disable an extension |
+| `/piforge limits` | List every tunable limit with its active value and default |
+| `/piforge set <ext>.<key> <value>` | Override a limit on this machine (saved to `~/.pi/piforge.json`; `/reload` to apply) |
+| `/piforge reset <ext>.<key>\|<ext>\|all` | Remove override(s) — back to the shipped defaults |
 | `/sessions` | List all `.think/` sessions with task + last-active date |
 | `/switch-session` | List sessions and pick one to resume |
 | `/switch-session <id>` | Switch `.think/` to that session and inject steer to read `_state.md` |

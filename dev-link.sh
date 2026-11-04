@@ -12,6 +12,11 @@ PI_DIR="$HOME/.pi/agent"
 
 mkdir -p "$PI_DIR/extensions" "$PI_DIR/skills/incremental-codegen"
 
+# Limits used to be tuned by editing the installed incremental-guard.ts; linking
+# replaces it. Move any such edits into ~/.pi/piforge.json first.
+node "$PIFORGE_DIR/migrate-config.mjs" "$PI_DIR/extensions/incremental-guard.ts" \
+  "$PIFORGE_DIR/extensions/incremental-guard.ts" "$HOME/.pi/piforge.json" "$PIFORGE_DIR/config/piforge.json"
+
 echo "Linking extensions → repo (live edits)..."
 for f in "$PIFORGE_DIR/extensions/"*.ts; do
   [ -e "$f" ] || continue

@@ -18,7 +18,8 @@ import * as os from "os";
 
 // ---------- LIMITS (defaults) ----------
 // These are the shipped DEFAULTS. Don't edit them for one machine — put
-// machine-specific values in ~/.pi/piforge.json (machine-local, never in git):
+// machine-specific values in ~/.pi/piforge.json (machine-local, never in git) —
+// from inside pi: /piforge set incremental-guard.maxLinesPerWrite 200 — or by hand:
 //   { "limits": { "incremental-guard": { "maxLinesPerWrite": 200 } } }
 // Keys: maxLinesPerWrite, maxCharsPerWrite, maxLinesPerEdit, maxCharsPerEdit,
 //       maxLinesPerBash, maxCharsPerBash. Read at session start, so /reload
@@ -325,7 +326,7 @@ export default function (pi: ExtensionAPI) {
         `incremental-guard: write ≤ ${L.maxLinesPerWrite} lines/${L.maxCharsPerWrite} chars, ` +
           `edit ≤ ${L.maxLinesPerEdit} lines/${L.maxCharsPerEdit} chars, ` +
           `bash ≤ ${L.maxLinesPerBash} lines/${L.maxCharsPerBash} chars. ` +
-          `Override per machine in ~/.pi/piforge.json → limits.incremental-guard, then /reload.`,
+          `Change on this machine: /piforge set incremental-guard.<key> <value>, then /reload (see /piforge limits).`,
         "info"
       );
     },

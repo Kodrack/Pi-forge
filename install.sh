@@ -28,6 +28,12 @@ mkdir -p "$PI_DIR/extensions"
 mkdir -p "$PI_DIR/skills/incremental-codegen"
 echo "✓ ~/.pi/agent directories ready"
 
+# ---------- 2b. Keep machine tuning across the update ----------
+# Limits used to be tuned by editing the installed incremental-guard.ts; the copy
+# below replaces it. Move any such edits into ~/.pi/piforge.json first.
+node "$PIFORGE_DIR/migrate-config.mjs" "$PI_DIR/extensions/incremental-guard.ts" \
+  "$PIFORGE_DIR/extensions/incremental-guard.ts" "$HOME/.pi/piforge.json" "$PIFORGE_DIR/config/piforge.json"
+
 # ---------- 3. Copy extensions ----------
 for f in "$PIFORGE_DIR/extensions/"*.ts; do
   base="$(basename "$f")"
@@ -109,6 +115,8 @@ echo "  2. Edit ~/.pi/agent/models.json — set your model id to match LM Studio
 echo "  3. (optional) Add a project AGENTS.md with ONLY project-specific rules —"
 echo "     the workflow contract is now global (~/.pi/agent/AGENTS.md)"
 echo "  4. Run: pi"
+echo "  5. Tune PiForge for this machine from inside pi: /piforge limits, /piforge set …"
+echo "     (saved to ~/.pi/piforge.json — updates never overwrite it)"
 echo ""
 echo "  You should see these on startup:"
 echo "    incremental-guard active (write: 100 lines/6000 chars, edit: 60 lines/3000 chars, bash: 100 lines/6000 chars)"

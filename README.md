@@ -426,10 +426,34 @@ Machine-specific tuning lives in `~/.pi/piforge.json`, never in the repo. The re
 }
 ```
 
+```
+/piforge                                             # extension toggles + whether any limits are overridden
+/piforge enable|disable <name>                       # switch an extension on/off on this machine
+/piforge limits                                      # every tunable limit: active value + default
+/piforge set incremental-guard.maxLinesPerWrite 200  # override a limit on this machine
+/piforge reset incremental-guard.maxLinesPerWrite    # back to default (also: reset incremental-guard | reset all)
+```
+
+Every one of these writes `~/.pi/piforge.json` and nothing else — never the extension code. Changes apply on `/reload`. Values are validated before anything is saved (positive whole numbers; setting a limit to its default removes the override instead of pinning it). Editing the file by hand works too.
+
 - `disabled` — extensions switched off on this machine (same list `/piforge` shows).
 - `limits.incremental-guard` — overrides the guard's shipped defaults. Keys: `maxLinesPerWrite` (default 100), `maxCharsPerWrite` (6000), `maxLinesPerEdit` (60), `maxCharsPerEdit` (3000), `maxLinesPerBash` (100), `maxCharsPerBash` (6000). Omitted keys keep their default; values must be positive integers. Read at session start, so `/reload` applies a change. The startup banner lists active overrides, and any key it had to ignore (typo, wrong type) is named in a warning.
 
 Models and the LM Studio host are machine-local too, but they belong to Pi itself: `~/.pi/agent/models.json` and `~/.pi/agent/settings.json` (`install.sh` asks before overwriting those).
+
+### Updating PiForge
+
+```bash
+cd piforge && git pull
+bash install.sh        # or: bash dev-link.sh if you work on PiForge itself
+```
+
+Then `/reload` (or restart `pi`). What an update touches, and what it never does:
+
+- **Replaced:** the extensions, the skill, the global `AGENTS.md` and the `/guide` doc — that's the PiForge code.
+- **Never overwritten:** `~/.pi/piforge.json` (your toggles and limits). New extensions that ship disabled by default are not added to your `disabled` list — compare with `config/piforge.json` after an update, or check `/piforge`.
+- **Asked first:** `~/.pi/agent/models.json` and `~/.pi/agent/settings.json` (Pi's own model/host/compaction config).
+- **Moved, not lost:** if you tuned limits the old way — by editing the constants in the *installed* `~/.pi/agent/extensions/incremental-guard.ts` — the update would replace that file. Both `install.sh` and `dev-link.sh` first run `migrate-config.mjs`, which copies any non-default value into `~/.pi/piforge.json` (a value already set there wins) and prints what it moved. Check the result with `/piforge limits`.
 
 ---
 
@@ -523,7 +547,8 @@ See [PI-SETUP.md](./PI-SETUP.md) for the complete reference — every config opt
 ```
 piforge/
 ├── README.md
-├── install.sh                          ← run this first
+├── install.sh                          ← run this first (and after every update)
+├── migrate-config.mjs                  ← run by install.sh/dev-link.sh: moves hand-edited limits into ~/.pi/piforge.json
 ├── PI-SETUP.md                         ← full reference guide
 ├── bench/                              ← dev-side test harness (never installed)
 │   ├── run-replay.sh                   ← instant logic replays (no LLM)
@@ -543,7 +568,7 @@ piforge/
 │   ├── acceptance-guard.ts             ← runs .think/_acceptance.sh; blocks "Status: complete" unless it exits 0
 │   ├── progress-checkpoint.ts          ← stalled session (no file changes) → forced "done or next action" checkpoint
 │   ├── loop-guard.ts                   ← detects repetition loops + malformed tool calls
-│   ├── piforge-manager.ts              ← /piforge command to toggle extensions
+│   ├── piforge-manager.ts              ← /piforge: toggles + limits (limits|set|reset) → ~/.pi/piforge.json
 │   ├── distill.ts                      ← /distill + distill_codebase tool
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
 │   ├── deep-research.ts                ← /research — multi-round research pipeline (coded, not prompted)
