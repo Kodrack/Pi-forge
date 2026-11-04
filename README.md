@@ -461,6 +461,8 @@ piforge/
 │   ├── context-monitor.ts              ← warns before context degrades
 │   ├── analysis-guard.ts               ← forces analysis to disk
 │   ├── token-counter.ts                ← tracks tokens + Gemini cost comparison
+│   ├── meeting-scribe.ts               ← /scribe: record a call → speaker-labelled transcript (local)
+│   ├── scribe-worker.py                ← meeting-scribe sidecar: STT + diarization worker
 │   ├── first-prompt.ts                 ← injects planning instruction into first prompt only
 │   ├── plan-clarify.ts                 ← clarifying questions after _plan.md (off by default)
 │   ├── knowledge-injector.ts           ← isolated LLM selects project-local knowledge files, hash-based distill cache
