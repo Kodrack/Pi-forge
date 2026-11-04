@@ -106,6 +106,7 @@ All four work together. `incremental-guard` stops bad code writes. `thinking-gua
 - **What it does:** appends `"Plan the implementation in numbered steps. Implement ONE step at a time ."` to the first prompt only
 - **Fires once:** `fired` flag prevents any effect on subsequent prompts
 - **Overhead:** zero — no steer message, no LLM call, no context cost
+- **Does not attach `AGENTS.md`:** Pi already bakes `~/.pi/agent/AGENTS.md` into the system prompt on every call; attaching it to the first message too would send the ~3.2K-token contract twice until the first compaction
 - **Toggle:** `/piforge disable first-prompt` / `/piforge enable first-prompt`
 - **Default:** enabled
 
@@ -801,6 +802,7 @@ cp $(pwd)/extensions/first-prompt.ts ~/.pi/agent/extensions/
 - Fires **once per session** on the very first `input` event — a `fired` flag prevents any effect on subsequent prompts
 - Enabled by default — disable with `/piforge disable first-prompt` if you want raw prompts
 - No model decision involved — pure programmatic text append
+- Only the short nudge is appended, never the full `AGENTS.md` contract — Pi already has that in the system prompt. If a weak model starts skipping the `.think/` workflow, the old full attachment is kept commented out in `first-prompt.ts` and can be restored
 
 ### Why it helps
 

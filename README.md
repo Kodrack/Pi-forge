@@ -20,7 +20,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write | on |
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten | on |
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
-| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead | on |
+| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead. Does not re-attach `AGENTS.md`: Pi already loads it into the system prompt | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
 | `response-guard.ts` | Backstop for verbose no-tool-call responses (>20000 chars). In practice superseded by thinking-guard's 4000-char mid-stream abort — only matters when thinking-guard is disabled (see header comments in the file) | on |
