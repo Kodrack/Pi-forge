@@ -21,17 +21,27 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 | `analysis-guard.ts` | Forces findings to `.think/step-NNN.md` when response > 1000 chars with no file write. Skipped in Dory read-only stages (the response is the deliverable) | on |
 | `state-guard.ts` | Blocks source reads until `_state.md` is read; forces updates every 5 turns; enforces `.think/` at root only (not in subfolders); blocks source writes after a new user prompt while `_state.md` says complete, until the state is rewritten. Skipped in Dory read-only stages | on |
 | `loop-guard.ts` | Detects repetition loops via Jaccard similarity (warns at 4, blocks at 6) AND malformed tool calls (warns at 4, compacts at 8). Auto-compacts to escape both. Safety net for missing inference settings | **off** |
-| `first-prompt.ts` | Appends "plan in steps, implement one at a time" (or the full `AGENTS.md` contract) to the first prompt — preventive, zero context overhead. Not attached in Dory read-only stages: that contract belongs to the executor | on |
+| `first-prompt.ts` | Appends "plan in steps, implement one at a time" to first prompt — preventive, zero context overhead. Does not re-attach `AGENTS.md`: Pi already loads it into the system prompt. Skipped entirely in Dory read-only stages (the job prompt carries its own persona) | on |
 | `plan-clarify.ts` | Intercepts `_plan.md` writes — forces model to ask ≤3 clarifying questions before any code | **off** |
 | `knowledge-injector.ts` | Pi subprocess (`--thinking off`) selects relevant `./knowledge/` files per-file. Large files distilled to `.distilled/` with hash-based cache. Manifest survives compaction. `/forget` to remove. | on |
 | `response-guard.ts` | Backstop for verbose no-tool-call responses (>20000 chars). In practice superseded by thinking-guard's 4000-char mid-stream abort — only matters when thinking-guard is disabled (see header comments in the file) | on |
 | `web-search.ts` | Web search with sub-pi synthesis. Searches DuckDuckGo, fetches pages, synthesizes via isolated sub-pi — main context only sees final summary. `web_search()` tool + `/web-search` command | on |
 | `execution-guard.ts` | Blocks `Status: complete` in `_state.md` while code files were modified but nothing was executed since — untested code cannot be declared done. Any execution releases the latch; gives up after 2 blocks. Built for unattended runs (`pi -p`, `/q` queues) | **off** |
 | `done-nudge.ts` | The mirror image: after 3 consecutive executions with zero source changes in between, steers once — "your checks pass and nothing is changing; mark `_state.md` complete and stop". Kills the perfect-solution-but-can't-conclude overrun | on |
+| `acceptance-guard.ts` | Makes "done" a harness verdict. The model must supply `.think/_acceptance.sh` (exits 0 only if the task is done); on `Status: complete` **the extension runs it** and the exit code decides — nonzero blocks the write and feeds back the real output. Rejects a test that passes before any code exists (a no-op test). Gives up after 3 blocks and hands back unverified. Supersedes `execution-guard` | on |
 
-These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, `execution-guard`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
+These are **hard** — the model cannot bypass them. `incremental-guard`, `knowledge-injector`, `execution-guard`, `acceptance-guard`, and `loop-guard` physically reject tool calls. The others inject steering messages before the next LLM call.
 
 `plan-clarify`, `loop-guard`, and `execution-guard` are **disabled by default** — enable per session with `/piforge enable <name>`. Use `/piforge` to see status.
+
+| `progress-checkpoint.ts` | Catches the *opposite* failure to all of the above: a session that never declares anything. At turn 30, then every 20, if **no file outside `.think/` has changed** since the last check, steers a forced choice — write `Status: complete` (acceptance-guard then verifies it) or write the ONE next action and do it; prose is rejected, the answer must be a tool call. A session that keeps changing files never sees one. Full instructions once, then a 284-char reminder, exponential backoff, and after 2 ignored checkpoints it stops steering and tells **you** instead | on |
+
+**The completion chain.** These five extensions divide the job and are easy to confuse:
+`progress-checkpoint` makes a stalled session *say something* → `done-nudge` pushes *toward* declaring done → `acceptance-guard` decides *whether it's true* (runs the test) → `execution-guard` is the weaker predecessor (only checks that *something* was spawned — `node --version` satisfies it; leave it off when `acceptance-guard` is on) → `completion-guard` enforces *stopping* once done is established. Only `acceptance-guard` looks at whether the code actually works, and only `progress-checkpoint` fires when the model declares nothing at all.
+
+Context cost is why `progress-checkpoint` is built the way it is: a steer is permanent context, so nagging a 50k-context model is self-defeating. A fully stalled session injects ~1.2k chars total (one full message + one short reminder) and then hands off to the human; a productive session injects zero.
+
+`acceptance-guard` has one opt-in tightening: set `REQUIRE_TEST_BEFORE_CODE = true` at the top of the file to block the first code write until an acceptance test exists. Off by default because it taxes trivial sessions; worth it for unattended runs (`pi -p`, `/q` queues) where nobody is watching.
 
 ### Codebase distillation — zoom levels for local models
 
@@ -314,7 +324,7 @@ A plan/chat/revise job's only deliverable is the marker block the board parses �
 | `dory-plan-guard.ts` | Blocks writes; blocks all tool calls after the marker block | The enforcement itself |
 | `state-guard.ts` | Skipped entirely | Its "create `_state.md` NOW" steer both fights the read-only browse and pushes the job into writing files |
 | `analysis-guard.ts` | Skipped entirely | The long response *is* the deliverable; it cannot be saved to `.think/step-NNN.md` |
-| `first-prompt.ts` | No `AGENTS.md` attachment | That contract is the executor's; attaching it made a plan job copy it into the brief and follow it into implementation |
+| `first-prompt.ts` | Skipped entirely — no planning nudge | The job prompt carries its own persona; when first-prompt still attached `AGENTS.md`, a plan job copied that executor contract into the brief and followed it into implementation |
 | `thinking-guard.ts` | Text abort caps raised (24000/block, 40000/turn) | A brief + acceptance test legitimately runs past the 4000-char text cap; clipping it loses the plan |
 | `knowledge-injector.ts` | Skipped (selection pass + write-block) | No code is written, so selection is pure cost |
 | `context-monitor.ts` | No `AGENTS.md`/digest re-injection after compaction; no "write your state files" warn steer (force-compaction still applies) | Same reason as `first-prompt`, but on the compaction path — re-injecting the contract restores the executor's rules mid-job, after `first-prompt` correctly withheld them |
@@ -341,6 +351,8 @@ Then:
 2. Edit `~/.pi/agent/models.json` — set the model `id` to match your LM Studio model
 3. The workflow contract is installed globally (`~/.pi/agent/AGENTS.md`) — optionally add a project-local `AGENTS.md` containing ONLY project-specific rules
 4. Run `pi` from your project directory
+
+`install.sh` also runs `patch-pi-loader.sh`, which removes `CLAUDE.md`/`CLAUDE.MD` from Pi's context-file candidates (`dist/core/resource-loader.js`). Pi loads one context file per directory from `["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]` for the cwd **and every ancestor directory**, so without the patch any repo with a `CLAUDE.md` and no `AGENTS.md` silently feeds Claude-Code instructions to the local model — often 10KB+ that does not apply to it. Pi offers no setting for this: `--no-context-files` is CLI-only and all-or-nothing, and `ExtensionAPI` has `getSystemPrompt()` with no setter. **Upgrading pi reverts the patch** — re-run `bash install.sh` (or `bash patch-pi-loader.sh`) afterwards. Revert with the `.piforge-bak` file it leaves beside the loader.
 
 On startup you should see:
 ```
@@ -460,6 +472,8 @@ piforge/
 │   ├── plan-clarify.ts                 ← clarifying questions after _plan.md (off by default)
 │   ├── knowledge-injector.ts           ← isolated LLM selects project-local knowledge files, hash-based distill cache
 │   ├── state-guard.ts                  ← blocks reads until _state.md read, forces updates
+│   ├── acceptance-guard.ts             ← runs .think/_acceptance.sh; blocks "Status: complete" unless it exits 0
+│   ├── progress-checkpoint.ts          ← stalled session (no file changes) → forced "done or next action" checkpoint
 │   ├── loop-guard.ts                   ← detects repetition loops + malformed tool calls
 │   ├── piforge-manager.ts              ← /piforge command to toggle extensions
 │   ├── dory-board.ts                   ← ù or /board: start the Dory board server + open the kanban

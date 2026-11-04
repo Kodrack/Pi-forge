@@ -5,3 +5,4 @@ node_modules/
 .think-sessions/
 knowledge/*
 !knowledge/.gitkeep
+bench/paste/out/
