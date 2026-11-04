@@ -14,7 +14,7 @@ Tested with `qwen3.6-35b-a3b` at **Q2_K_XL quantization** via LM Studio on macOS
 
 | Extension | What it enforces | Default |
 |---|---|---|
-| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
+| `incremental-guard.ts` | Rejects writes > 100 lines/6000 chars, edits > 60 lines/3000 chars, bash commands > 100 lines/6000 chars by default — override per machine in `~/.pi/piforge.json`, see [Per-machine settings](#per-machine-settings-pipiforgejson) (closes the heredoc side door — small `cat >>` append chunks stay allowed) — forces skeleton → small edit workflow. After blocking an oversized write it watches the path: if the "recovery" leaves the file at < half the attempted size, it steers once (likely truncated) | on |
 | `project-jail.ts` | Confines all file mutations to the project root (session cwd): blocks `write`/`edit` targeting outside paths, and `bash` that mutates or `cd`s into home-area paths (`/Users`, `/home`, `~/`) outside the project. Reading/executing outside files stays allowed. Heredoc **bodies** are excluded from the scan — they're document content, never targets, and a doc mentioning `~/.pi/agent/` used to be unwritable via the sanctioned `cat >> file <<'CHUNK'` append. Side effect: executor sessions can't rewrite Dory's mind-repo tests | on |
 | `thinking-guard.ts` | Hard-aborts a runaway generation mid-stream at 4000 chars per block AND 20000 chars cumulative per turn (thinking AND response text channels — the per-turn cap catches dumps split across many small blocks); soft-steers next turn when a thinking block exceeded 15000 chars. In Dory read-only stages the *text* caps are raised to 24000/40000 so a brief + acceptance test isn't clipped | on |
 | `context-monitor.ts` | Steers model to write state files at 65% context, force-compacts at 80% with aggressive summarization; re-injects full AGENTS.md every 4th compaction (condensed digest in between, tune `FULL_AGENTS_EVERY`) and auto-continues the session (`triggerTurn`) — Pi's `compact()` aborts the agent loop, so without it the reinjection sits unread until the user types. Auto-continue is withheld when `.think/_state.md` says `Status: complete` or after `MAX_AUTO_CONTINUES` (3) consecutive auto-turns without real user input. Both steers are skipped in Dory read-only stages | on |
@@ -440,12 +440,54 @@ Then:
 
 On startup you should see:
 ```
-incremental-guard active (max 100 lines / 6000 chars per write/edit)
+incremental-guard active (write: 100 lines/6000 chars, edit: 60 lines/3000 chars, bash: 100 lines/6000 chars)
 thinking-guard active (max 2000 chars / 60 lines of thinking per turn)
 context-monitor active — warn at 65%, force compact at 80% (window: XXXXX tokens)
 analysis-guard active (triggers on responses >1000 chars with no file write)
 session-manager: session-001 — .think/ ready
 ```
+
+### Per-machine settings (`~/.pi/piforge.json`)
+
+Machine-specific tuning lives in `~/.pi/piforge.json`, never in the repo. The repo's `config/piforge.json` is only the starting template; `install.sh` copies it once and never overwrites an existing file, and `/piforge enable|disable` edits it in place without touching the other sections.
+
+```json
+{
+  "disabled": ["plan-clarify", "explore", "distill-awareness"],
+  "limits": {
+    "incremental-guard": { "maxLinesPerWrite": 200 }
+  }
+}
+```
+
+```
+/piforge                                             # extension toggles + whether any limits are overridden
+/piforge enable|disable <name>                       # switch an extension on/off on this machine
+/piforge limits                                      # every tunable limit: active value + default
+/piforge set incremental-guard.maxLinesPerWrite 200  # override a limit on this machine
+/piforge reset incremental-guard.maxLinesPerWrite    # back to default (also: reset incremental-guard | reset all)
+```
+
+Every one of these writes `~/.pi/piforge.json` and nothing else — never the extension code. Changes apply on `/reload`. Values are validated before anything is saved (positive whole numbers; setting a limit to its default removes the override instead of pinning it). Editing the file by hand works too.
+
+- `disabled` — extensions switched off on this machine (same list `/piforge` shows).
+- `limits.incremental-guard` — overrides the guard's shipped defaults. Keys: `maxLinesPerWrite` (default 100), `maxCharsPerWrite` (6000), `maxLinesPerEdit` (60), `maxCharsPerEdit` (3000), `maxLinesPerBash` (100), `maxCharsPerBash` (6000). Omitted keys keep their default; values must be positive integers. Read at session start, so `/reload` applies a change. The startup banner lists active overrides, and any key it had to ignore (typo, wrong type) is named in a warning.
+
+Models and the LM Studio host are machine-local too, but they belong to Pi itself: `~/.pi/agent/models.json` and `~/.pi/agent/settings.json` (`install.sh` asks before overwriting those).
+
+### Updating PiForge
+
+```bash
+cd piforge && git pull
+bash install.sh        # or: bash dev-link.sh if you work on PiForge itself
+```
+
+Then `/reload` (or restart `pi`). What an update touches, and what it never does:
+
+- **Replaced:** the extensions, the skill, the global `AGENTS.md` and the `/guide` doc — that's the PiForge code.
+- **Never overwritten:** `~/.pi/piforge.json` (your toggles and limits). New extensions that ship disabled by default are not added to your `disabled` list — compare with `config/piforge.json` after an update, or check `/piforge`.
+- **Asked first:** `~/.pi/agent/models.json` and `~/.pi/agent/settings.json` (Pi's own model/host/compaction config).
+- **Moved, not lost:** if you tuned limits the old way — by editing the constants in the *installed* `~/.pi/agent/extensions/incremental-guard.ts` — the update would replace that file. Both `install.sh` and `dev-link.sh` first run `migrate-config.mjs`, which copies any non-default value into `~/.pi/piforge.json` (a value already set there wins) and prints what it moved. Check the result with `/piforge limits`.
 
 ---
 
@@ -539,7 +581,8 @@ See [PI-SETUP.md](./PI-SETUP.md) for the complete reference — every config opt
 ```
 piforge/
 ├── README.md
-├── install.sh                          ← run this first
+├── install.sh                          ← run this first (and after every update)
+├── migrate-config.mjs                  ← run by install.sh/dev-link.sh: moves hand-edited limits into ~/.pi/piforge.json
 ├── PI-SETUP.md                         ← full reference guide
 ├── bench/                              ← dev-side test harness (never installed)
 │   ├── run-replay.sh                   ← instant logic replays (no LLM)
@@ -559,7 +602,7 @@ piforge/
 │   ├── acceptance-guard.ts             ← runs .think/_acceptance.sh; blocks "Status: complete" unless it exits 0
 │   ├── progress-checkpoint.ts          ← stalled session (no file changes) → forced "done or next action" checkpoint
 │   ├── loop-guard.ts                   ← detects repetition loops + malformed tool calls
-│   ├── piforge-manager.ts              ← /piforge command to toggle extensions
+│   ├── piforge-manager.ts              ← /piforge: toggles + limits (limits|set|reset) → ~/.pi/piforge.json
 │   ├── dory-board.ts                   ← ù or /board: start the Dory board server + open the kanban
 │   ├── dory-mode.ts                    ← /dory: run board jobs in this session (fresh session per job)
 │   ├── dory-plan-guard.ts              ← keeps chat/plan/respond jobs read-only, stops them after the marker block
@@ -587,7 +630,7 @@ piforge/
 ├── config/
 │   ├── models.json                     ← LM Studio provider config template
 │   ├── settings.json                   ← Pi global settings
-│   └── piforge.json                    ← extension toggles (plan-clarify + loop-guard off by default)
+│   └── piforge.json                    ← template for ~/.pi/piforge.json (copied once; per-machine toggles + limits live there)
 └── project-template/
     └── AGENTS.md                       ← installed globally to ~/.pi/agent/AGENTS.md
 ```

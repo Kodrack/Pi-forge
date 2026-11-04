@@ -12,8 +12,8 @@
 - `step-NNN.md` — one file per reasoning step
 
 ### Guards enforcing you
-- Writes over 100 lines / 6000 chars get **blocked** (edits over 60 lines / 3000 chars) — write skeleton first, fill in sections
-- Bash commands over 100 lines / 6000 chars get **blocked** — never inline a whole file in one heredoc; split into multiple small `cat >> file << 'CHUNK'` appends
+- Writes over the write limit get **blocked** (default 100 lines / 6000 chars; edits 60 lines / 3000 chars — this machine may override them, and the block message always states the active limit) — write skeleton first, fill in sections
+- Bash commands over the bash limit (default 100 lines / 6000 chars) get **blocked** — never inline a whole file in one heredoc; split into multiple small `cat >> file << 'CHUNK'` appends
 - Generation is **aborted mid-stream** past 4000 chars of thinking or response text in one block, or 20000 chars total in one turn — think briefly, write conclusions to disk, NEVER dump code into chat
 - After a blocked oversized write, the file is watched: if it ends up far smaller than what you attempted, you get steered — append ALL the missing chunks, the file is not done until it matches your plan
 - Declaring `Status: complete` while modified code was never executed may be **blocked** (when execution-guard is enabled) — run your code and read the output before declaring done
@@ -46,6 +46,7 @@
 - `/board [open|status]` — open the Dory kanban board in the browser (user can also press ù); auto-starts the board server against the mind repo
 - `/dory [on|off|status]` — run Dory's board tasks in the current Pi session: each job (chat reply, plan, revision, executor run) opens a fresh session (context purged per task), runs visibly here, and reports back to the board orchestrator; the session belongs to Dory until /dory off
 - `/lmstudio [status | load <id> [ctx] | unload <id|all>]` — console for the LM Studio server itself: list models with load state/quant/context, load one (optionally at a custom context length), unload, or swap. With no arguments it opens an interactive selector for the user. Loading a big model takes minutes — don't retry while the footer still says `loading …`
+- `/piforge` — user's PiForge settings for this machine: `enable|disable <ext>`, `limits` (show), `set <ext>.<key> <value>`, `reset …`. Saved to `~/.pi/piforge.json`, applied on `/reload`. These are the USER's settings — if a limit blocks you, split the work; don't ask to raise it
 - `/guide` — load this PiForge guide
 
 ### Knowledge files

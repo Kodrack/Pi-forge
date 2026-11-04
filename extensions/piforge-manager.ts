@@ -1,11 +1,15 @@
 // piforge-manager.ts
-// Manages which PiForge extensions are enabled or disabled via ~/.pi/piforge.json.
-// Extensions that support toggling check that file on session_start.
+// Manages this machine's PiForge settings in ~/.pi/piforge.json (machine-local,
+// never in git): which extensions are disabled, and per-machine limit overrides.
+// Extensions read that file on session_start, so changes apply on /reload.
 //
 // Commands:
-//   /piforge              — show all toggleable extensions + current status
-//   /piforge enable <name>  — enable an extension
-//   /piforge disable <name> — disable an extension
+//   /piforge                          — extension toggles + current status
+//   /piforge enable <name>            — enable an extension
+//   /piforge disable <name>           — disable an extension
+//   /piforge limits                   — every tunable limit: active value, default
+//   /piforge set <ext>.<key> <value>  — override a limit on this machine
+//   /piforge reset <ext>.<key>|<ext>|all — drop override(s), back to defaults
 //
 // Install: copy to ~/.pi/agent/extensions/piforge-manager.ts
 
@@ -43,17 +47,84 @@ const TOGGLEABLE = [
   { name: "lmstudio-console",   description: "/lmstudio — list/load/unload models on the LM Studio server (interactive console)" },
 ];
 
-function readConfig(): { disabled: string[] } {
+// piforge.json is this machine's PiForge config: "disabled" plus other sections
+// (e.g. "limits" read by incremental-guard). Always read-modify-write the WHOLE
+// object so toggling an extension never drops the other sections.
+type PiforgeConfig = { disabled: string[]; [section: string]: unknown };
+
+function readConfig(): PiforgeConfig {
+  let config: any;
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
   } catch {
-    return { disabled: [] };
+    config = {};
   }
+  if (!config || typeof config !== "object" || Array.isArray(config)) config = {};
+  if (!Array.isArray(config.disabled)) config.disabled = [];
+  return config;
 }
 
-function writeConfig(config: { disabled: string[] }) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+// Write via a temp file + rename so an interrupted write can't leave a
+// half-written piforge.json (which every extension would then read as "no config").
+function writeConfig(config: PiforgeConfig) {
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  const tmp = CONFIG_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n");
+  fs.renameSync(tmp, CONFIG_PATH);
 }
+
+// ---------- LIMITS ----------
+// Every setting /piforge set|reset can change. Each lives in piforge.json under
+// "limits" → <ext> → <key>, and the owning extension reads it on session_start.
+// `def` MUST equal the default constant in the owning extension —
+// bench/functional/test-piforge-config.mjs parses both and fails on drift.
+export const SETTINGS: { ext: string; key: string; def: number; desc: string }[] = [
+  { ext: "incremental-guard", key: "maxLinesPerWrite", def: 100,  desc: "max lines in one write call" },
+  { ext: "incremental-guard", key: "maxCharsPerWrite", def: 6000, desc: "max chars in one write call" },
+  { ext: "incremental-guard", key: "maxLinesPerEdit",  def: 60,   desc: "max lines in one edit new_string (old_string: 2x)" },
+  { ext: "incremental-guard", key: "maxCharsPerEdit",  def: 3000, desc: "max chars in one edit new_string" },
+  { ext: "incremental-guard", key: "maxLinesPerBash",  def: 100,  desc: "max lines in one bash command" },
+  { ext: "incremental-guard", key: "maxCharsPerBash",  def: 6000, desc: "max chars in one bash command" },
+];
+
+function findSetting(id: string) {
+  return SETTINGS.find((s) => `${s.ext}.${s.key}` === id);
+}
+
+function getOverride(config: PiforgeConfig, ext: string, key: string): unknown {
+  const limits = config.limits as Record<string, Record<string, unknown>> | undefined;
+  return limits?.[ext]?.[key];
+}
+
+// Remove a key; prune the now-empty ext object and "limits" so the file stays tidy.
+function dropOverride(config: PiforgeConfig, ext: string, key: string): boolean {
+  const limits = config.limits as Record<string, Record<string, unknown>> | undefined;
+  if (!limits?.[ext] || !(key in limits[ext])) return false;
+  delete limits[ext][key];
+  if (Object.keys(limits[ext]).length === 0) delete limits[ext];
+  if (Object.keys(limits).length === 0) delete config.limits;
+  return true;
+}
+
+function limitsReport(config: PiforgeConfig): string {
+  const rows = SETTINGS.map((s) => {
+    const id = `${s.ext}.${s.key}`;
+    const o = getOverride(config, s.ext, s.key);
+    const valid = typeof o === "number" && Number.isInteger(o) && o > 0;
+    const shown =
+      o === undefined ? `${s.def}` : valid ? `${o}  (default ${s.def})` : `${s.def}  (invalid override ${JSON.stringify(o)} ignored)`;
+    return `  ${id.padEnd(36)} ${shown.padEnd(18)} ${s.desc}`;
+  });
+  return (
+    "piforge limits (this machine, ~/.pi/piforge.json):\n" +
+    rows.join("\n") +
+    "\nchange: /piforge set <ext>.<key> <value>  ·  undo: /piforge reset <ext>.<key>|<ext>|all  ·  then /reload"
+  );
+}
+
+const USAGE =
+  "usage: /piforge | /piforge enable|disable <name> | /piforge limits | " +
+  "/piforge set <ext>.<key> <value> | /piforge reset <ext>.<key>|<ext>|all";
 
 function isDisabled(name: string): boolean {
   return readConfig().disabled.includes(name);
@@ -68,7 +139,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("piforge", {
-    description: "Manage PiForge extension toggles",
+    description: "PiForge settings for this machine: extension toggles and limits (/piforge limits|set|reset)",
     handler: async (args, ctx) => {
       const parts = (args ?? "").trim().split(/\s+/);
       const action = parts[0];
@@ -81,12 +152,80 @@ export default function (pi: ExtensionAPI) {
           const status = config.disabled.includes(e.name) ? "disabled" : "enabled ";
           return `  [${status}]  ${e.name.padEnd(22)} ${e.description}`;
         });
-        ctx.ui.notify("piforge extension status:\n" + lines.join("\n"), "info");
+        const overridden = SETTINGS.filter((s) => getOverride(config, s.ext, s.key) !== undefined).length;
+        ctx.ui.notify(
+          "piforge extension status:\n" + lines.join("\n") +
+            `\nlimits: ${overridden ? `${overridden} overridden on this machine` : "all defaults"} — /piforge limits`,
+          "info"
+        );
+        return;
+      }
+
+      if (action === "limits") {
+        ctx.ui.notify(limitsReport(readConfig()), "info");
+        return;
+      }
+
+      if (action === "set") {
+        const id = parts[1];
+        const raw = parts[2];
+        const setting = id ? findSetting(id) : undefined;
+        if (!setting) {
+          ctx.ui.notify(
+            `${id ? `unknown setting "${id}". ` : ""}settable: ${SETTINGS.map((s) => `${s.ext}.${s.key}`).join(", ")}\n${USAGE}`,
+            "info"
+          );
+          return;
+        }
+        const value = Number(raw);
+        if (raw === undefined || !/^[0-9]+$/.test(raw) || !Number.isInteger(value) || value <= 0) {
+          ctx.ui.notify(`piforge: ${id} needs a positive whole number (got ${JSON.stringify(raw ?? "")}) — nothing saved`, "warning");
+          return;
+        }
+        const config = readConfig();
+        if (value === setting.def) {
+          dropOverride(config, setting.ext, setting.key);
+          writeConfig(config);
+          ctx.ui.notify(`piforge: ${id} = ${value} is the default — override removed from ~/.pi/piforge.json (/reload to apply)`, "info");
+          return;
+        }
+        const limits = ((config.limits ??= {}) as Record<string, Record<string, unknown>>);
+        const section = (limits[setting.ext] ??= {});
+        const before = section[setting.key];
+        section[setting.key] = value;
+        writeConfig(config);
+        ctx.ui.notify(
+          `piforge: ${id} = ${value} (was ${before ?? `default ${setting.def}`}) — saved to ~/.pi/piforge.json, /reload to apply`,
+          "info"
+        );
+        return;
+      }
+
+      if (action === "reset") {
+        const target = parts[1];
+        if (!target) {
+          ctx.ui.notify(USAGE, "info");
+          return;
+        }
+        const matches =
+          target === "all" ? SETTINGS : SETTINGS.filter((s) => `${s.ext}.${s.key}` === target || s.ext === target);
+        if (matches.length === 0) {
+          ctx.ui.notify(`piforge: nothing called "${target}" — see /piforge limits`, "info");
+          return;
+        }
+        const config = readConfig();
+        const dropped = matches.filter((s) => dropOverride(config, s.ext, s.key)).map((s) => `${s.ext}.${s.key}`);
+        if (dropped.length === 0) {
+          ctx.ui.notify(`piforge: ${target} already at defaults — nothing to reset`, "info");
+          return;
+        }
+        writeConfig(config);
+        ctx.ui.notify(`piforge: reset to default → ${dropped.join(", ")} (/reload to apply)`, "info");
         return;
       }
 
       if (action !== "enable" && action !== "disable") {
-        ctx.ui.notify("usage: /piforge | /piforge enable <name> | /piforge disable <name>", "info");
+        ctx.ui.notify(USAGE, "info");
         return;
       }
 
