@@ -70,7 +70,7 @@ const CONFIG_PATH = path.join(os.homedir(), ".pi", "piforge.json");
 // Kinds the orchestrator dispatches: chat | respond | plan | exec.
 // "respond" (the Revise stage) belongs here too: it either answers a question
 // or rewrites the plan — still marker text only, never code.
-const DORY_SKIP_KINDS = ["chat", "plan", "respond"];
+const DORY_SKIP_KINDS = ["chat", "plan", "respond", "wave"];
 const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 
 // ---------- HELPERS ----------

@@ -17,6 +17,13 @@
 //           → blocked. Bare cards get a quick plan+test at pickup first.
 //   INGEST  (/api/ingest) massive raw text → prd/PRD-NNN.md + one task card
 //           per work item, created in plan_queue.
+//   GOALS   (long horizon, see organizer/LONG-HORIZON.md) a plan job may answer
+//           a too-big card with GOAL + goal test + a first wave of SUBTASKS.
+//           Approving the goal creates the wave as linked subtask cards; each
+//           is planned just in time (only once its deps are done), reviewed and
+//           built like any card, and leaves a handoff note. When a wave is done
+//           the goal test runs: pass → goal done, fail → a read-only "wave" job
+//           plans the next wave (or says STUCK). Budgets are enforced in code.
 //
 // WHERE JOBS RUN — two modes, chosen automatically per job:
 //   RUNNER   when an interactive Pi session has attached via /dory (the
@@ -36,7 +43,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 const ENGINE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -54,8 +61,21 @@ const FAIL_COOLDOWN_MS = 5 * 60 * 1000;  // don't hot-loop a failing job
 const RUNNER_FRESH_MS = 35 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
+// Long-horizon goals. Overridable per mind repo in config.json → "long_horizon".
+// Only "review" autonomy exists today: every subtask stops in plan_created for
+// the human, exactly like a normal card.
+const LH_DEFAULTS = { autonomy: "review", max_subtasks_per_wave: 4, max_waves: 5, max_subtasks_total: 15 };
+const HANDOFF_CONTEXT_MAX = 6000;   // chars of earlier handoffs fed into a subtask/wave prompt
+const MAX_SPLIT_REJECTS = 2;        // a subtask answering with GOAL this often → blocked (depth limit)
+const CHANGED_FILES_MAX = 40;
 // Top-level sections of dory-persona.md (one per job kind that uses a persona).
-const PERSONA_SECTIONS = ["Chat", "Plan", "Revise"];
+const PERSONA_SECTIONS = ["Chat", "Plan", "Revise", "Revise goal", "Wave"];
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", ".venv", "__pycache__"]);
+
+// Which cooldown bucket a job kind uses ("reply" covers chat + respond).
+function cooldownKey(kind) {
+  return kind === "exec" ? "exec" : kind === "plan" ? "plan" : kind === "wave" ? "wave" : "reply";
+}
 
 // Ingest persona is short enough to live here; the per-column personas are
 // the bigger, more tunable ones and live in organizer/dory-persona.md.
@@ -111,7 +131,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   let jobCounter = 0;
 
   const TMP_DIR = path.join(mindDir, ".dory-tmp");
-  for (const d of ["tasks", "tests", "prd", "diary", ".dory-tmp"]) {
+  for (const d of ["tasks", "tests", "prd", "diary", "handoffs", ".dory-tmp"]) {
     fs.mkdirSync(path.join(mindDir, d), { recursive: true });
   }
   const gitignore = path.join(mindDir, ".gitignore");
@@ -161,6 +181,54 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   function coolingDown(key) {
     return Date.now() - (cooldown.get(key) ?? 0) < FAIL_COOLDOWN_MS;
+  }
+
+  // Long-horizon budgets: defaults, overridden by config.json → long_horizon
+  // (positive integers only; anything else falls back to the default).
+  function lh(cfg) {
+    const out = { ...LH_DEFAULTS };
+    const o = cfg.long_horizon ?? {};
+    for (const k of ["max_subtasks_per_wave", "max_waves", "max_subtasks_total"]) {
+      if (Number.isInteger(o[k]) && o[k] > 0) out[k] = o[k];
+    }
+    return out;
+  }
+
+  const isGoal = (t) => t?.kind === "goal";
+  const subtasksOf = (board, goalId) => board.tasks.filter((x) => x.parent === goalId);
+  function goalOf(board, t) {
+    return t?.parent ? board.tasks.find((x) => x.id === t.parent && isGoal(x)) ?? null : null;
+  }
+
+  // Earlier subtasks' handoff notes for a goal, oldest first, trimmed from the
+  // front so the newest (most relevant) survive the size cap.
+  function handoffsText(board, goalId) {
+    const parts = subtasksOf(board, goalId)
+      .filter((x) => x.status === "done" && x.handoff && fs.existsSync(path.join(mindDir, x.handoff)))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((x) => fs.readFileSync(path.join(mindDir, x.handoff), "utf-8").trim());
+    let text = parts.join("\n\n---\n\n");
+    if (text.length > HANDOFF_CONTEXT_MAX) text = "…(older handoffs trimmed)\n" + text.slice(-HANDOFF_CONTEXT_MAX);
+    return text || "(nothing built yet: this is the first subtask)";
+  }
+
+  function goalContext(board, t) {
+    const goal = goalOf(board, t);
+    if (!goal) return "";
+    return (
+      `\n\n# PART OF A LARGER GOAL (${goal.id}: ${goal.title})\n${goal.goal ?? goal.notes ?? ""}\n\n` +
+      `# WHAT EARLIER SUBTASKS OF THIS GOAL LEFT BEHIND\n${handoffsText(board, goal.id)}`
+    );
+  }
+
+  function parseItems(raw) {
+    try {
+      const items = JSON.parse(stripFences(raw ?? ""));
+      if (!Array.isArray(items) || !items.length || !items.every((t) => t && typeof t.title === "string" && t.title.trim())) return null;
+      return items;
+    } catch {
+      return null;
+    }
   }
 
   // ── persona sections (## Chat / ## Plan / ## Revise) ─────────────────────
@@ -344,6 +412,130 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return loadBoard().tasks.find((x) => x.id === id);
   }
 
+  // ── long horizon: subtask creation + handoffs ────────────────────────────
+
+  // Turn a wave's SUBTASKS items into linked cards on `board` (caller saves).
+  // Every budget and validation rule lives HERE, in code — never trusted to the
+  // prompt. Returns { created, notes } or { error } (nothing created on error).
+  //   - duplicate titles (vs this wave and earlier subtasks of the goal) dropped
+  //   - at most max_subtasks_per_wave, and the goal's total ≤ max_subtasks_total
+  //   - depends_on: integer = index in THIS wave's array; "T-NNN" = an existing
+  //     subtask of this goal; anything else dropped and reported
+  //   - a dependency cycle inside the wave rejects the whole wave
+  function createSubtasks(board, goal, items, wave, cfg) {
+    const L = lh(cfg);
+    const notes = [];
+    const existing = subtasksOf(board, goal.id);
+    const seen = new Set(existing.map((x) => x.title.trim().toLowerCase()));
+    let kept = [];
+    items.forEach((item, i) => {
+      const key = String(item.title).trim().toLowerCase();
+      if (seen.has(key)) { notes.push(`dropped duplicate subtask "${item.title}"`); return; }
+      seen.add(key);
+      kept.push({ item, orig: i });
+    });
+    if (kept.length > L.max_subtasks_per_wave) {
+      notes.push(`wave capped at ${L.max_subtasks_per_wave} subtasks (dropped: ${kept.slice(L.max_subtasks_per_wave).map((k) => `"${k.item.title}"`).join(", ")})`);
+      kept = kept.slice(0, L.max_subtasks_per_wave);
+    }
+    const room = L.max_subtasks_total - existing.length;
+    if (room <= 0) return { error: `subtask budget used up (${L.max_subtasks_total} total for one goal)` };
+    if (kept.length > room) {
+      notes.push(`goal total capped at ${L.max_subtasks_total} subtasks (dropped: ${kept.slice(room).map((k) => `"${k.item.title}"`).join(", ")})`);
+      kept = kept.slice(0, room);
+    }
+    if (!kept.length) return { error: "no valid subtasks in this wave" };
+
+    const pos = new Map(kept.map((k, j) => [k.orig, j])); // original index → kept index
+    const existingIds = new Set(existing.map((x) => x.id));
+    const edges = kept.map((k) => {
+      const out = { local: [], ids: [] };
+      for (const d of Array.isArray(k.item.depends_on) ? k.item.depends_on : []) {
+        if (Number.isInteger(d) && pos.has(d) && pos.get(d) !== pos.get(k.orig)) out.local.push(pos.get(d));
+        else if (typeof d === "string" && existingIds.has(d)) out.ids.push(d);
+        else notes.push(`"${k.item.title}": ignored dependency ${JSON.stringify(d)}`);
+      }
+      return out;
+    });
+    // cycle check over in-wave edges (DFS with colours)
+    const colour = new Array(kept.length).fill(0);
+    const cyclic = (n) => {
+      if (colour[n] === 1) return true;
+      if (colour[n] === 2) return false;
+      colour[n] = 1;
+      for (const m of edges[n].local) if (cyclic(m)) return true;
+      colour[n] = 2;
+      return false;
+    };
+    for (let n = 0; n < kept.length; n++) {
+      if (cyclic(n)) return { error: "the subtasks' dependencies form a cycle — wave rejected" };
+    }
+
+    const created = kept.map((k) =>
+      createTask(board, {
+        title: String(k.item.title).trim().slice(0, 200),
+        status: "plan_queue",
+        notes: `${k.item.notes ?? ""}\n\nSubtask of goal ${goal.id} ("${goal.title}"), wave ${wave}.`.trim(),
+        priority: [1, 2, 3].includes(k.item.priority) ? k.item.priority : 3,
+      }, "dory")
+    );
+    created.forEach((t, j) => {
+      t.parent = goal.id;
+      t.wave = wave;
+      t.depends_on = [...edges[j].local.map((m) => created[m].id), ...edges[j].ids];
+    });
+    return { created, notes };
+  }
+
+  // Files under the project changed since `sinceMs`. Uses git's view when the
+  // project is a repo (filtered by mtime, so pre-existing uncommitted edits are
+  // not credited to this run); otherwise an mtime walk. Best-effort, capped.
+  function changedFiles(cwd, sinceMs) {
+    const since = sinceMs - 2000; // filesystem timestamp slack
+    const fresh = (rel) => {
+      try { return fs.statSync(path.join(cwd, rel)).mtimeMs >= since; } catch { return false; }
+    };
+    const git = spawnSync("git", ["-C", cwd, "status", "--porcelain", "-uall"], { encoding: "utf-8", timeout: 10000 });
+    if (git.status === 0) {
+      return git.stdout.split("\n").filter(Boolean)
+        .map((l) => l.slice(3).replace(/^.* -> /, "").replace(/^"|"$/g, ""))
+        .filter(fresh).slice(0, CHANGED_FILES_MAX);
+    }
+    const out = [];
+    let visited = 0;
+    const walk = (dir) => {
+      let entries = [];
+      try { entries = fs.readdirSync(path.join(cwd, dir), { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (out.length >= CHANGED_FILES_MAX || ++visited > 5000) return;
+        if (e.name.startsWith(".think") || SKIP_DIRS.has(e.name)) continue;
+        const rel = dir ? `${dir}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(rel);
+        else if (e.isFile() && fresh(rel)) out.push(rel);
+      }
+    };
+    walk("");
+    return out;
+  }
+
+  // A finished subtask leaves a note for the next ones: the files this run
+  // changed (deterministic) + what the executor said in its HANDOFF block.
+  function writeHandoff(task, out, cwd) {
+    const goalId = task.parent;
+    const startedAt = Date.parse([...(task.history ?? [])].reverse().find((h) => h.to === "in_progress")?.at ?? "") || Date.now() - EXEC_TIMEOUT_MS;
+    const files = cwd ? changedFiles(cwd, startedAt) : [];
+    const said = between(out ?? "", "<<<HANDOFF>>>", ["<<<END>>>"]);
+    const rel = `handoffs/${task.id}.md`;
+    fs.writeFileSync(
+      path.join(mindDir, rel),
+      `# Handoff ${task.id}: ${task.title} (goal ${goalId}, wave ${task.wave ?? "?"})\n\n` +
+        `## Files changed in this run\n${files.length ? files.map((x) => `- ${x}`).join("\n") : "- (none detected)"}\n\n` +
+        `## Executor's notes\n${said || "(no HANDOFF block in the executor's final message)"}\n`
+    );
+    withTask(task.id, (t) => { t.handoff = rel; }, `${task.id} handoff written (dory)`);
+    diary(`${task.id} handoff → ${rel} (${files.length} files)`);
+  }
+
   // ── prompt builders (shared by headless + runner modes) ──────────────────
 
   function buildChatPrompt(task) {
@@ -351,6 +543,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   }
 
   function buildRespondPrompt(task) {
+    if (isGoal(task)) return buildGoalRespondPrompt(task);
     const currentPlan = task.brief && fs.existsSync(path.join(mindDir, task.brief))
       ? fs.readFileSync(path.join(mindDir, task.brief), "utf-8")
       : "(no plan written yet)";
@@ -362,7 +555,42 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
 
   function buildPlanPrompt(task, quick) {
     const quickNote = quick ? "\n\nBE BRIEF: this card was queued for immediate execution — smallest viable plan, but the TEST rules still apply in full." : "";
-    return `${persona("Plan")}${quickNote}\n\n${cardHeader(task)}\n\nUse the id ${task.id} in the brief heading.`;
+    const sub = task.parent
+      ? `\n\nTHIS CARD IS A SUBTASK of goal ${task.parent}. It was already split once: answer with BRIEF + TEST only — a GOAL answer is rejected.` +
+        goalContext(loadBoard(), task)
+      : "";
+    return `${persona("Plan")}${quickNote}\n\n${cardHeader(task)}${sub}\n\nUse the id ${task.id} in the brief heading.`;
+  }
+
+  // Revising a goal card. Before wave 1 starts the outline can still change
+  // (GOAL block) or the goal can go back to being one normal card (BRIEF block);
+  // once running, the conversation is answers only.
+  function buildGoalRespondPrompt(task) {
+    const board = loadBoard();
+    const started = (task.wave ?? 0) > 0 || subtasksOf(board, task.id).length > 0;
+    const outline = task.brief && fs.existsSync(path.join(mindDir, task.brief)) ? fs.readFileSync(path.join(mindDir, task.brief), "utf-8") : "(no outline)";
+    const test = fs.existsSync(path.join(mindDir, `tests/${task.id}.sh`)) ? fs.readFileSync(path.join(mindDir, `tests/${task.id}.sh`), "utf-8") : "(no goal test)";
+    const subs = subtasksOf(board, task.id).map((x) => `- ${x.id} [${x.status}] wave ${x.wave}: ${x.title}`).join("\n") || "(none yet)";
+    return (
+      `${persona("Revise goal")}\n\n${cardHeader(task)}\n\n# STATE\n${started ? "RUNNING: the outline is fixed, answer with REPLY only." : "NOT STARTED: the outline may still change."}\n\n` +
+      `# CURRENT GOAL + OUTLINE\n${outline}\n\n# CURRENT GOAL TEST\n${test}\n\n# SUBTASKS\n${subs}`
+    );
+  }
+
+  // Next wave of a goal whose goal test still fails after the current wave.
+  function buildWavePrompt(goal, testOut) {
+    const board = loadBoard();
+    const L = lh(config());
+    const subs = subtasksOf(board, goal.id);
+    const list = subs.map((x) => `- ${x.id} [${x.status}] wave ${x.wave}: ${x.title}`).join("\n");
+    const room = Math.min(L.max_subtasks_per_wave, L.max_subtasks_total - subs.length);
+    const test = fs.existsSync(path.join(mindDir, `tests/${goal.id}.sh`)) ? fs.readFileSync(path.join(mindDir, `tests/${goal.id}.sh`), "utf-8") : "(no goal test)";
+    return (
+      `${persona("Wave")}\n\n${cardHeader(goal)}\n\n# GOAL\n${goal.goal ?? goal.notes ?? ""}\n\n# GOAL TEST\n${test}\n\n` +
+      `# GOAL TEST OUTPUT NOW (it fails)\n\`\`\`\n${(testOut ?? "").slice(-2500)}\n\`\`\`\n\n` +
+      `# SUBTASKS SO FAR\n${list}\n\n# WHAT THEY LEFT BEHIND\n${handoffsText(board, goal.id)}\n\n` +
+      `# BUDGET\nThis will be wave ${(goal.wave ?? 0) + 1} of at most ${L.max_waves}. You may create at most ${Math.max(room, 0)} subtasks.`
+    );
   }
 
   function buildExecPrompt(task, briefContent, lastTestOut) {
@@ -374,7 +602,12 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       `IMPORTANT: the project root is your CURRENT WORKING DIRECTORY. Do ALL work here with relative paths. ` +
       `If the brief mentions any absolute path outside this directory, IGNORE that location and treat it as this project root instead.\n\n` +
       `${briefContent}\n\n# REQUIREMENTS DISCUSSION (the card's conversation — context and clarifications from the human)\n${renderConversation(task)}${retryNote}\n\n` +
-      `When you believe you are done, the acceptance test must pass: ${task.test_cmd}`
+      `When you believe you are done, the acceptance test must pass: ${task.test_cmd}` +
+      (task.parent
+        ? `${goalContext(loadBoard(), task)}\n\n` +
+          `When you are done, END your final message with a handoff for the next subtasks of this goal:\n` +
+          `<<<HANDOFF>>>\nfiles you created/changed, functions/endpoints/commands the next subtasks can use, anything left unfinished\n<<<END>>>`
+        : "")
     );
   }
 
@@ -392,6 +625,10 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
   }
 
   function handleRespondResult(task, out, meta) {
+    if (!meta.failed && (isGoal(task) || between(out, "<<<GOAL>>>", ["<<<TEST>>>"]) !== null)) {
+      const handled = handleGoalRespond(task, out);
+      if (handled) return;
+    }
     const brief = between(out, "<<<BRIEF>>>", ["<<<TEST>>>", "<<<REPLY>>>"]);
     const test = between(out, "<<<TEST>>>", ["<<<REPLY>>>", "<<<END>>>"]);
     const reply = between(out, "<<<REPLY>>>", ["<<<END>>>"]) || (!brief ? out.trim().slice(-3000) : "");
@@ -411,7 +648,107 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     }
   }
 
+  // GOAL + goal TEST + SUBTASKS from a plan or revise job → the card becomes a
+  // goal (not started yet: the wave-1 outline waits in pending_wave until the
+  // human approves the goal). Returns false when the payload is unusable.
+  function parseGoalPayload(out) {
+    const goal = between(out, "<<<GOAL>>>", ["<<<TEST>>>"]);
+    const test = between(out, "<<<TEST>>>", ["<<<SUBTASKS>>>", "<<<REPLY>>>", "<<<END>>>"]);
+    const items = parseItems(between(out, "<<<SUBTASKS>>>", ["<<<REPLY>>>", "<<<END>>>"]));
+    return goal && test && items ? { goal, test, items } : null;
+  }
+
+  function applyGoalPlan(task, payload) {
+    const L = lh(config());
+    const items = payload.items.slice(0, L.max_subtasks_per_wave);
+    const outline = items
+      .map((it, i) => `${i}. ${it.title}${Array.isArray(it.depends_on) && it.depends_on.length ? ` (after ${it.depends_on.join(", ")})` : ""}${it.notes ? ` — ${it.notes}` : ""}`)
+      .join("\n");
+    const brief = `# ${task.id} — ${task.title} (goal)\n\n## Goal\n${payload.goal}\n\n## Wave 1 outline\n${outline}\n`;
+    writePlanFiles(task.id, brief, payload.test);
+    withTask(task.id, (t) => {
+      t.kind = "goal";
+      t.goal = payload.goal;
+      t.pending_wave = items;
+      t.wave = 0;
+      t.waves_done = 0;
+    }, `${task.id} is a goal — wave-1 outline written (dory)`);
+    if (payload.items.length > items.length) noteTask(task.id, `outline capped at ${L.max_subtasks_per_wave} subtasks per wave; the rest can come in a later wave`);
+    return outline;
+  }
+
+  function rejectSplit(task) {
+    let rejects = 0;
+    withTask(task.id, (t) => { t.split_rejects = rejects = (t.split_rejects ?? 0) + 1; }, `${task.id} split rejected (dory)`);
+    diary(`plan ${task.id} answered with GOAL but it is a subtask (depth limit) — rejected ${rejects}x`);
+    if (rejects >= MAX_SPLIT_REJECTS) {
+      withTask(task.id, (t) => applyMove(t, "blocked", "dory"), `${task.id} blocked — keeps splitting a subtask (dory)`);
+      noteTask(task.id, `blocked: Dory tried to split this subtask ${rejects} times, but subtasks can't have subtasks. Make the card smaller, or turn it into its own goal outside goal ${task.parent}.`);
+    } else {
+      cooldown.set(`plan:${task.id}`, Date.now());
+      noteTask(task.id, `plan rejected: subtasks can't be split again (depth limit) — will retry with a BRIEF`);
+    }
+    return false;
+  }
+
+  // Revise on a goal (or a normal card asked to be split). Returns true when it
+  // fully handled the result; false lets the normal revise path run.
+  function handleGoalRespond(task, out) {
+    const board = loadBoard();
+    const started = (task.wave ?? 0) > 0 || subtasksOf(board, task.id).length > 0;
+    const reply = between(out, "<<<REPLY>>>", ["<<<END>>>"]);
+    const wantsGoal = between(out, "<<<GOAL>>>", ["<<<TEST>>>"]) !== null;
+    const wantsBrief = between(out, "<<<BRIEF>>>", ["<<<TEST>>>", "<<<REPLY>>>"]) !== null;
+    if (!isGoal(task)) {
+      // a normal card the human asked to split
+      if (task.parent || !["plan_queue", "plan_created", "approved"].includes(task.status)) return false;
+      const payload = parseGoalPayload(out);
+      if (!payload) return false;
+      const outline = applyGoalPlan(task, payload);
+      say(task.id, `${reply || "Split into a goal."}\n\nWave 1:\n${outline}`, `${task.id} converted to a goal (dory)`);
+      diary(`${task.id} converted to a goal after feedback`);
+      return true;
+    }
+    if (started && (wantsGoal || wantsBrief)) {
+      say(task.id, `${reply ? reply + "\n\n" : ""}(The goal is already running, so its outline can't change now. To change direction: let the current wave finish, or move this goal to Blocked and tell me what to do differently.)`, `${task.id} reply (dory)`);
+      return true;
+    }
+    if (!started && wantsGoal) {
+      const payload = parseGoalPayload(out);
+      if (!payload) return false;
+      const outline = applyGoalPlan(task, payload);
+      say(task.id, `${reply || "This is the new outline."}\n\nWave 1:\n${outline}`, `${task.id} goal outline revised (dory)`);
+      diary(`revised goal outline for ${task.id} after feedback`);
+      return true;
+    }
+    if (!started && wantsBrief) {
+      // back to one normal card
+      withTask(task.id, (t) => { delete t.kind; delete t.goal; delete t.pending_wave; delete t.wave; delete t.waves_done; }, `${task.id} goal → normal card (dory)`);
+      return false; // the normal revise path writes the BRIEF/TEST and replies
+    }
+    return false;
+  }
+
   function handlePlanResult(task, out, meta) {
+    if (!meta.failed && between(out, "<<<GOAL>>>", ["<<<TEST>>>"]) !== null) {
+      if (task.parent) return rejectSplit(task);
+      const payload = parseGoalPayload(out);
+      if (payload) {
+        const outline = applyGoalPlan(task, payload);
+        if (!meta.quick) {
+          withTask(task.id, (t) => applyMove(t, "plan_created", "dory"), `${task.id} plan_queue → plan_created (goal outline, dory)`);
+        }
+        say(
+          task.id,
+          `This is bigger than one card, so I made it a goal.\n\nGoal: ${payload.goal}\n\nWave 1:\n${outline}\n\n` +
+            `The goal test (on this card) decides when the whole thing is done. Reply to change the outline, or drag this card to Approved to start wave 1 — each subtask still comes back to you for review.`,
+          `${task.id} goal outline posted (dory)`
+        );
+        diary(`planned ${task.id} as a GOAL (wave 1: ${payload.items.length} subtasks)${meta.quick ? " (quick pickup)" : ""}`);
+        return true;
+      }
+      // GOAL marker but unusable payload → fall through to the normal failure path
+    }
     const brief = between(out, "<<<BRIEF>>>", ["<<<TEST>>>"]);
     const test = between(out, "<<<TEST>>>", ["<<<END>>>"]);
     if (!brief || !test || meta.failed) {
@@ -430,7 +767,43 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return true;
   }
 
-  async function handleExecResult(task, _out, meta) {
+  function handleWaveResult(goal, out, meta) {
+    const stuck = between(out, "<<<STUCK>>>", ["<<<END>>>"]);
+    const items = parseItems(between(out, "<<<SUBTASKS>>>", ["<<<STUCK>>>", "<<<END>>>"]));
+    if (!meta.failed && stuck && !items) {
+      withTask(goal.id, (g) => applyMove(g, "blocked", "dory"), `${goal.id} blocked — Dory is stuck (dory)`);
+      noteTask(goal.id, `stuck after wave ${goal.wave}: ${stuck}`);
+      diary(`${goal.id} STUCK after wave ${goal.wave}`);
+      return;
+    }
+    if (meta.failed || !items) {
+      cooldown.set(`wave:${goal.id}`, Date.now());
+      fs.writeFileSync(path.join(TMP_DIR, `wave-failed-${goal.id}.txt`), out ?? "");
+      diary(`wave for ${goal.id} FAILED (${meta.detail ?? "unparseable output"})`);
+      noteTask(goal.id, `planning the next wave failed — will retry; raw output in .dory-tmp/wave-failed-${goal.id}.txt`);
+      return;
+    }
+    let result = null;
+    withTask(goal.id, (g, board) => {
+      result = createSubtasks(board, g, items, (g.wave ?? 0) + 1, config());
+      if (!result.error) g.wave = (g.wave ?? 0) + 1;
+    }, `${goal.id} next wave (dory)`);
+    if (!result || result.error) {
+      cooldown.set(`wave:${goal.id}`, Date.now());
+      noteTask(goal.id, `next wave rejected: ${result?.error ?? "goal deleted"}`);
+      diary(`wave for ${goal.id} rejected: ${result?.error}`);
+      return;
+    }
+    say(
+      goal.id,
+      `The goal test still fails, so here is wave ${goal.wave + 1}:\n${result.created.map((t) => `- ${t.id} ${t.title}`).join("\n")}` +
+        `${result.notes.length ? `\n\nNotes: ${result.notes.join("; ")}` : ""}\n\nEach one comes back to you for review in Plan created.`,
+      `${goal.id} wave ${goal.wave + 1} posted (dory)`
+    );
+    diary(`${goal.id} wave ${goal.wave + 1}: created ${result.created.map((t) => t.id).join(", ")}`);
+  }
+
+  async function handleExecResult(task, out, meta) {
     const cfg = config();
     const cwd = workDir(cfg);
     const state = execState.get(task.id) ?? { attempt: 1, lastTestOut: "" };
@@ -442,6 +815,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       execState.delete(task.id);
       withTask(task.id, (x) => applyMove(x, "done", "daemon"), `${task.id} done — acceptance test passed on attempt ${state.attempt} (daemon)`);
       diary(`${task.id} DONE (attempt ${state.attempt}) — test passed`);
+      if (t.parent) writeHandoff(freshTask(task.id) ?? t, out, cwd);
       return;
     }
     diary(`${task.id} attempt ${state.attempt} failed — test exit ${test.code}`);
@@ -500,20 +874,21 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return Date.now() - lastRunnerPoll < RUNNER_FRESH_MS;
   }
 
-  const HANDLERS = { chat: handleChatResult, respond: handleRespondResult, plan: handlePlanResult, exec: handleExecResult };
+  const HANDLERS = { chat: handleChatResult, respond: handleRespondResult, plan: handlePlanResult, wave: handleWaveResult, exec: handleExecResult };
   const HEADLESS_ARGS = {
     chat:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     respond: (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     plan:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
+    wave:    (cfg) => ["--no-session", "--tools", "read,bash,web_search", "--thinking", cfg.dory_thinking || "off"],
     exec:    () => ["--no-session"], // executor: full tool set + guard stack
   };
-  const TIMEOUTS = { chat: CHAT_TIMEOUT_MS, respond: PLAN_TIMEOUT_MS, plan: PLAN_TIMEOUT_MS, exec: EXEC_TIMEOUT_MS };
+  const TIMEOUTS = { chat: CHAT_TIMEOUT_MS, respond: PLAN_TIMEOUT_MS, plan: PLAN_TIMEOUT_MS, wave: PLAN_TIMEOUT_MS, exec: EXEC_TIMEOUT_MS };
 
   async function dispatch(kind, task, prompt, meta = {}) {
     const cfg = config();
     const cwd = workDir(cfg);
     if (!cwd) {
-      cooldown.set(`${kind === "exec" ? "exec" : kind === "plan" ? "plan" : "reply"}:${task.id}`, Date.now());
+      cooldown.set(`${cooldownKey(kind)}:${task.id}`, Date.now());
       noteTask(task.id, `${kind} blocked: no project — press ù from your project's Pi session (or set "project_dir" in ${path.join(mindDir, "config.json")})`);
       return;
     }
@@ -536,7 +911,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     // subprocess. If the runner is not attached we HOLD the job rather than leak
     // it. Set "runner_mode": "auto" in config.json to allow the headless fallback.
     if ((cfg.runner_mode || "session") === "session") {
-      cooldown.set(`${kind === "exec" ? "exec" : kind === "plan" ? "plan" : "reply"}:${task.id}`, Date.now());
+      cooldown.set(`${cooldownKey(kind)}:${task.id}`, Date.now());
       liveStart(`${activity} → waiting for your Pi session — press ù there, then /dory`);
       diary(`${kind} ${task.id} held — no Pi session attached (runner_mode=session)`);
       noteTask(
@@ -641,6 +1016,100 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     return (task.depends_on ?? []).every((id) => board.tasks.find((t) => t.id === id)?.status === "done");
   }
 
+  // ── long horizon: advance goal cards (one action per tick) ───────────────
+  // Returns true when it did something (the tick ends there).
+  async function advanceGoals(board) {
+    const cfg = config();
+    const L = lh(cfg);
+    const goals = board.tasks
+      .filter((t) => isGoal(t) && (t.status === "approved" || t.status === "in_progress"))
+      .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+    for (const goal of goals) {
+      if (!board.dispatch) return false; // the master switch holds every goal
+      if (coolingDown(`goal:${goal.id}`) || coolingDown(`wave:${goal.id}`)) continue;
+      const cwd = workDir(cfg);
+      if (!cwd) {
+        cooldown.set(`goal:${goal.id}`, Date.now());
+        noteTask(goal.id, `goal waiting: no project — press ù from your project's Pi session (or set "project_dir" in config.json)`);
+        continue;
+      }
+
+      // Approved goal → start wave 1 (after checking the goal test isn't already green).
+      if (goal.status === "approved") {
+        if (!depsCompleted(board, goal)) continue;
+        if (!goal.test_cmd || !Array.isArray(goal.pending_wave) || !goal.pending_wave.length) {
+          withTask(goal.id, (g) => applyMove(g, "blocked", "dory"), `${goal.id} blocked — goal without outline/test (dory)`);
+          noteTask(goal.id, "this goal has no wave-1 outline or goal test — drag it back to Plan queue to replan it");
+          return true;
+        }
+        activity = `checking goal test of ${goal.id} before wave 1…`;
+        const pre = await runTest(goal, cwd);
+        if (pre.code === 0) {
+          withTask(goal.id, (g) => applyMove(g, "blocked", "dory"), `${goal.id} blocked — goal test already passes (dory)`);
+          noteTask(goal.id, "the goal test already passes before any work — it doesn't test the goal. Reply with what it should check (I'll revise it), then drag the goal back to Approved.");
+          diary(`${goal.id} goal test passes before wave 1 — blocked`);
+          return true;
+        }
+        let result = null;
+        withTask(goal.id, (g, b) => {
+          result = createSubtasks(b, g, g.pending_wave, 1, cfg);
+          if (result.error) return;
+          g.wave = 1;
+          delete g.pending_wave;
+          applyMove(g, "in_progress", "daemon");
+        }, `${goal.id} wave 1 started (daemon)`);
+        if (!result || result.error) {
+          cooldown.set(`goal:${goal.id}`, Date.now());
+          noteTask(goal.id, `couldn't start wave 1: ${result?.error ?? "goal deleted"} — reply to revise the outline`);
+          return true;
+        }
+        say(
+          goal.id,
+          `Wave 1 started:\n${result.created.map((t) => `- ${t.id} ${t.title}`).join("\n")}` +
+            `${result.notes.length ? `\n\nNotes: ${result.notes.join("; ")}` : ""}\n\nI'll plan each one when the subtasks it depends on are done; every plan comes back to you for review.`,
+          `${goal.id} wave 1 posted (daemon)`
+        );
+        diary(`${goal.id} wave 1 started: ${result.created.map((t) => t.id).join(", ")}`);
+        return true;
+      }
+
+      // Running goal → wait for the current wave; when it's done, run the goal test.
+      const wave = subtasksOf(board, goal.id).filter((x) => x.wave === goal.wave);
+      const blocked = wave.filter((x) => x.status === "blocked");
+      if (blocked.length) {
+        const msg = `paused: ${blocked.map((x) => x.id).join(", ")} ${blocked.length > 1 ? "are" : "is"} Blocked — fix it (reply + drag back to Approved) or delete it, and the goal continues`;
+        if (!(goal.notes ?? "").includes(msg)) noteTask(goal.id, msg);
+        continue;
+      }
+      if (!wave.every((x) => x.status === "done")) continue;
+
+      activity = `wave ${goal.wave} of ${goal.id} done — running the goal test…`;
+      const test = await runTest(goal, cwd);
+      if (test.code === 0) {
+        withTask(goal.id, (g) => { g.waves_done = g.wave; applyMove(g, "done", "daemon"); }, `${goal.id} done — goal test passed after wave ${goal.wave} (daemon)`);
+        say(goal.id, `Goal reached: the goal test passes after wave ${goal.wave} (${subtasksOf(board, goal.id).length} subtasks).`, `${goal.id} goal reached (daemon)`);
+        diary(`${goal.id} GOAL DONE after wave ${goal.wave}`);
+        return true;
+      }
+      withTask(goal.id, (g) => { g.waves_done = g.wave; }, `${goal.id} wave ${goal.wave} done, goal test still failing (daemon)`);
+      const total = subtasksOf(board, goal.id).length;
+      if (goal.wave >= L.max_waves || total >= L.max_subtasks_total) {
+        const which = goal.wave >= L.max_waves ? `${L.max_waves} waves` : `${L.max_subtasks_total} subtasks`;
+        withTask(goal.id, (g) => {
+          applyMove(g, "blocked", "daemon");
+          g.notes = `${g.notes ?? ""}\n⚠ budget reached (${which}), goal test still failing. Last output:\n${test.out.slice(-1500)}`.trim();
+        }, `${goal.id} blocked — budget reached (daemon)`);
+        say(goal.id, `I stopped: the budget (${which}) is used up and the goal test still fails. The last test output is in the notes. Raise "long_horizon" limits in config.json, or reply with how to proceed and drag the goal back to Approved.`, `${goal.id} budget reached (daemon)`);
+        diary(`${goal.id} BLOCKED — budget (${which}) reached`);
+        return true;
+      }
+      activity = `planning wave ${goal.wave + 1} of ${goal.id}…`;
+      await dispatch("wave", goal, buildWavePrompt(goal, test.out));
+      return true;
+    }
+    return false;
+  }
+
   async function tick() {
     // A delegated job is in flight — enforce its timeout, and if the runner
     // vanished before ever picking it up, hand it back to dispatch(), which
@@ -657,7 +1126,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       if (Date.now() - pendingJob.createdAt > pendingJob.timeoutMs) {
         const job = pendingJob;
         pendingJob = null;
-        cooldown.set(`${job.kind === "exec" ? "exec" : job.kind === "plan" ? "plan" : "reply"}:${job.taskId}`, Date.now());
+        cooldown.set(`${cooldownKey(job.kind)}:${job.taskId}`, Date.now());
         diary(`${job.kind} ${job.taskId} TIMED OUT in the Pi session runner`);
         activity = "";
       }
@@ -690,8 +1159,14 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         return;
       }
 
-      // 2. in_progress continuation — next executor attempt
-      const inProgress = board.tasks.find((t) => t.status === "in_progress");
+      // 1b. goal cards — start waves, check the goal test, plan the next wave.
+      //     busy stays TRUE here: the goal test can run for minutes, and a
+      //     re-entrant tick (polled every 5s) would start the same wave twice.
+      if (await advanceGoals(board)) return;
+
+      // 2. in_progress continuation — next executor attempt (goal cards sit in
+      //    in_progress while their subtasks run; they never execute themselves)
+      const inProgress = board.tasks.find((t) => t.status === "in_progress" && !isGoal(t));
       if (inProgress) {
         busy = false;
         if (!board.dispatch) return; // paused mid-task: hold position
@@ -703,8 +1178,12 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
         return;
       }
 
-      // 3. planning queue
-      const toPlan = board.tasks.find((t) => t.status === "plan_queue" && !coolingDown(`plan:${t.id}`));
+      // 3. planning queue — JUST IN TIME: a card is planned only once the cards it
+      //    depends on are done, so it's planned against code that exists. (Goal
+      //    subtasks need this; it also stops ingest from planning everything at once.)
+      const toPlan = board.tasks.find(
+        (t) => t.status === "plan_queue" && !(isGoal(t) && (t.wave ?? 0) > 0) && depsCompleted(board, t) && !coolingDown(`plan:${t.id}`)
+      );
       if (toPlan) {
         busy = false;
         activity = `planning ${toPlan.id}: browsing codebase, writing brief + test…`;
@@ -715,7 +1194,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
       // 4. execution pickup — only when the human armed the switch
       if (!board.dispatch) return;
       const ready = board.tasks
-        .filter((t) => t.status === "approved" && depsCompleted(board, t) && !coolingDown(`exec:${t.id}`) && !coolingDown(`plan:${t.id}`))
+        .filter((t) => t.status === "approved" && !isGoal(t) && depsCompleted(board, t) && !coolingDown(`exec:${t.id}`) && !coolingDown(`plan:${t.id}`))
         .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
       const next = ready[0];
       if (!next) return;
@@ -758,7 +1237,7 @@ export function createDory({ mindDir, loadBoard, saveBoard, applyMove, createTas
     // Reactive board: a human touching a card (move, message, create) means
     // "react NOW" — clear its failure cooldowns and tick immediately.
     wake: (taskId) => {
-      if (taskId) for (const job of ["reply", "plan", "exec"]) cooldown.delete(`${job}:${taskId}`);
+      if (taskId) for (const job of ["reply", "plan", "exec", "wave", "goal"]) cooldown.delete(`${job}:${taskId}`);
       setImmediate(() => void tick());
     },
   };

@@ -357,7 +357,7 @@ Selected filenames are saved to `.think/_knowledge-manifest.md`. After compactio
 
 Code writes are blocked until `.think/_knowledge.md` is written — proof the model absorbed the knowledge.
 
-**Skipped entirely during Dory `chat`, `plan` and `respond` stages** (`DORY_SKIP_KINDS` in `knowledge-injector.ts`). Those jobs write no code, so selection is pure cost and the write-block is harmful: it burns turns on an acknowledgment and can push the `<<<BRIEF>>>`/`<<<TEST>>>` block out of the final assistant message, which is how a valid plan silently fails to reach the board. The stage is read from `~/.pi/organizer/dory-runner.json` (written by `dory-mode.ts`); `exec` jobs still get knowledge as normal. Four other extensions do the same stage check — see *Dory read-only stages* below.
+**Skipped entirely during Dory `chat`, `plan`, `respond` and `wave` stages** (`DORY_SKIP_KINDS` in `knowledge-injector.ts`). Those jobs write no code, so selection is pure cost and the write-block is harmful: it burns turns on an acknowledgment and can push the `<<<BRIEF>>>`/`<<<TEST>>>` block out of the final assistant message, which is how a valid plan silently fails to reach the board. The stage is read from `~/.pi/organizer/dory-runner.json` (written by `dory-mode.ts`); `exec` jobs still get knowledge as normal. Four other extensions do the same stage check — see *Dory read-only stages* below.
 
 Commands: `/forget <name>` (remove knowledge mid-session), `/guide` (load PiForge self-documentation into context on demand)
 
@@ -393,15 +393,17 @@ Add your own — name by tech, failures only. Small files (<500 tokens) get full
 
 The master layer above the executor: a 7-column, conversation-driven kanban (`chat → plan_queue → plan_created → approved → in_progress → done`, plus `blocked`) over `tasks.json` in a git "mind repo". Cards are stateless — the column defines what Dory does: chat threads in *Chat*, plan + acceptance test written in *Plan Queue*, feedback-driven plan revisions in *Plan Created*, and test-gated PiForge executor runs from *Approved* (bare cards get a quick plan at pickup). Board UI + engine are one zero-dependency process (`node organizer/board/server.mjs <mind-dir>`, or just press `ù` in Pi). See `organizer/README.md`.
 
+**Long tasks become goals.** A card too big for one run is planned as a *goal*: an end-to-end goal test plus small waves of linked subtasks. Each subtask is planned only once the ones it depends on are done, reviewed by you, built, and leaves a handoff note for the next. When a wave is done the goal test decides: done, or Dory plans the next wave (or says what she's stuck on). Budgets (subtasks per wave, waves, total) are enforced in code. See `organizer/README.md` and `organizer/LONG-HORIZON.md`.
+
 | Extension | What it does | Default |
 |---|---|---|
 | `dory-board.ts` | `ù` (or `/board`) starts the orchestrator (background queue manager) and opens the kanban in the browser. Retargets Dory's project to this session's cwd on every press. Composes with voice-input's editor wrapper | on |
 | `dory-mode.ts` | `/dory` — Dory's tasks run IN THIS Pi session: polls the board for jobs, opens a fresh session per task (hard context purge), runs it visibly with the full PiForge stack, posts the result back to the orchestrator (which parses, test-gates, and moves cards). `/dory off` returns the session | on |
-| `dory-plan-guard.ts` | Makes Dory's `chat`/`plan`/`respond` jobs **read-only** in-session — the same restriction headless jobs get from `--tools read,bash,web_search`. Blocks `write`/`edit` and mutating `bash` (redirect, heredoc, `tee`, `rm`/`mv`/`mkdir`, `sed -i`, `git add/commit`, installers), and once the marker block (`<<<TEST>>>`/`<<<END>>>`) has streamed it blocks **every** further tool call: the planner must not implement its own plan. Steers once after 3 blocked attempts so the job can't burn its timeout retrying | on |
+| `dory-plan-guard.ts` | Makes Dory's `chat`/`plan`/`respond`/`wave` jobs **read-only** in-session — the same restriction headless jobs get from `--tools read,bash,web_search`. Blocks `write`/`edit` and mutating `bash` (redirect, heredoc, `tee`, `rm`/`mv`/`mkdir`, `sed -i`, `git add/commit`, installers), and once the marker block (`<<<TEST>>>`/`<<<END>>>`) has streamed it blocks **every** further tool call: the planner must not implement its own plan. Steers once after 3 blocked attempts so the job can't burn its timeout retrying | on |
 
 #### Dory read-only stages
 
-A plan/chat/revise job's only deliverable is the marker block the board parses — it writes nothing, and the executor (a separate session, dispatched from *Approved*) is what implements the card. Headless jobs are restricted by `--tools read,bash,web_search` in `dory.mjs`; in-session `/dory` jobs have the full tool set and the full guard stack, so the restriction is enforced by extension instead. Eight extensions read the stage (`DORY_STAGE` env for headless jobs, `~/.pi/organizer/dory-runner.json` for in-session ones) and change behavior when it is `chat`, `plan` or `respond`. The file record carries the writing process's `pid` and is only honored when it matches: it is a single global slot, so without that check an unrelated Pi session — or any session started after a `/dory` session was killed mid-job — would find itself running under a planner's rules.
+A plan/chat/revise/wave job's only deliverable is the marker block the board parses — it writes nothing, and the executor (a separate session, dispatched from *Approved*) is what implements the card. Headless jobs are restricted by `--tools read,bash,web_search` in `dory.mjs`; in-session `/dory` jobs have the full tool set and the full guard stack, so the restriction is enforced by extension instead. Eight extensions read the stage (`DORY_STAGE` env for headless jobs, `~/.pi/organizer/dory-runner.json` for in-session ones) and change behavior when it is `chat`, `plan` or `respond`. The file record carries the writing process's `pid` and is only honored when it matches: it is a single global slot, so without that check an unrelated Pi session — or any session started after a `/dory` session was killed mid-job — would find itself running under a planner's rules.
 
 | Extension | Behavior in a read-only stage | Why |
 |---|---|---|
@@ -605,7 +607,7 @@ piforge/
 │   ├── piforge-manager.ts              ← /piforge: toggles + limits (limits|set|reset) → ~/.pi/piforge.json
 │   ├── dory-board.ts                   ← ù or /board: start the Dory board server + open the kanban
 │   ├── dory-mode.ts                    ← /dory: run board jobs in this session (fresh session per job)
-│   ├── dory-plan-guard.ts              ← keeps chat/plan/respond jobs read-only, stops them after the marker block
+│   ├── dory-plan-guard.ts              ← keeps chat/plan/respond/wave jobs read-only, stops them after the marker block
 │   ├── distill.ts                      ← /distill + distill_codebase tool
 │   ├── distill-query.ts                ← /l1 /l2 /l3 direct level queries + /distill-status
 │   ├── deep-research.ts                ← /research — multi-round research pipeline (coded, not prompted)

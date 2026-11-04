@@ -50,8 +50,9 @@ const POLL_MS = 10000;
 // be empty there and the result would be dropped silently.
 const RUNNER_STATE_PATH = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 // The orchestrator parses plan/exec output with indexOf, i.e. the FIRST marker
-// block wins. If the model produced more than one brief (a retry), keep the newest.
-const BRIEF_MARKER = "<<<BRIEF>>>";
+// block wins. If the model produced more than one deliverable (a retry), keep the
+// newest: a plan's BRIEF or GOAL block, else a wave's SUBTASKS/STUCK block.
+const DELIVERABLE_MARKERS = [["<<<BRIEF>>>", "<<<GOAL>>>"], ["<<<SUBTASKS>>>", "<<<STUCK>>>"]];
 
 type RunnerJob = { id: string; kind: string; taskId: string };
 
@@ -168,8 +169,13 @@ export default function doryMode(pi: ExtensionAPI) {
       )
       .filter((t: string) => t.trim().length > 0)
       .join("\n\n");
-    const lastBrief = output.lastIndexOf(BRIEF_MARKER);
-    if (lastBrief > 0) output = output.slice(lastBrief);
+    for (const group of DELIVERABLE_MARKERS) {
+      const last = Math.max(...group.map((m) => output.lastIndexOf(m)));
+      if (last >= 0) {
+        if (last > 0) output = output.slice(last);
+        break;
+      }
+    }
     try {
       await api("/api/runner/result", "POST", { id: job.id, output });
       writeRunnerState({ running: true }); // job done, runner stays on

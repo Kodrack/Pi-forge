@@ -1,7 +1,19 @@
 # Long-horizon tasks: goal cards and subtasks (design)
 
-Status: **proposal, for review. Nothing here is implemented yet.**
-Default autonomy: **review** (every subtask waits for human approval).
+Status: **phases 1 and 2 implemented** (goal cards, wave 1, just-in-time
+planning, goal test, next waves, handoff notes, budgets) — see
+`organizer/README.md` → *Goals*. Phases 3–4 are still proposals.
+Autonomy: only **review** exists (every subtask waits for human approval).
+
+Decisions taken (§14): Dory writes the first goal test and the human reviews
+it with the outline; subtasks keep their own priority; subtasks are approved
+one by one; "files changed" uses git status filtered by mtime when the project
+is a repo, else an mtime walk.
+
+Found while implementing: `persona()` cut every section at the first line
+starting with `## `, which the brief template inside `## Plan` contains, so
+the planner never received the TEST format or rules. Sections now end only at
+the next real persona header.
 
 ## 1. Goal
 

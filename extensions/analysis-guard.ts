@@ -25,7 +25,7 @@ const MIN_ANALYSIS_CHARS = 1000;
 // it to .think/step-NNN.md is both impossible (dory-plan-guard blocks the
 // write) and harmful: on 2026-07-25 that steer is what turned the T-006 plan
 // job into an implementation run. Kinds from dory.mjs: chat|respond|plan|exec.
-const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 
 // ---------- STEERING MESSAGE ----------

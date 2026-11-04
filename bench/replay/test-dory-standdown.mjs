@@ -29,7 +29,8 @@ const WORKFLOW_EXTENSIONS = [
   "context-monitor.ts",
 ];
 
-const READONLY_KINDS = ["chat", "plan", "respond"];
+// "wave" (planning a goal's next wave) is the fourth marker-only stage.
+const READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 const checks = [];
 
 for (const file of WORKFLOW_EXTENSIONS) {

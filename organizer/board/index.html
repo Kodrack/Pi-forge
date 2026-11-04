@@ -82,6 +82,14 @@
                 display: flex; gap: 8px; flex-wrap: wrap; }
   .card .meta .test { color: var(--ok); }
   .card .meta .msgs.waiting { color: var(--warn); animation: pulse 1.6s infinite; }
+  /* long-horizon goals: the goal card + its subtasks */
+  .card.goal { border-left: 3px solid var(--accent, #6ea8fe); }
+  .card .goal-badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+                      background: #22304a; color: var(--accent, #6ea8fe); }
+  .card .progress { margin-top: 6px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .card .progress span { display: block; height: 100%; background: var(--ok); }
+  .card .parent { font-size: 10px; color: var(--accent, #6ea8fe); cursor: pointer; }
+  .card .parent:hover { text-decoration: underline; }
   @keyframes pulse { 50% { opacity: .35; } }
 
   /* ── card drawer ── */
@@ -250,9 +258,17 @@ function age(iso) {
   return Math.round(mins / 1440) + "d";
 }
 
+// Mirrors the engine: Dory answers in every column except in_progress.
 function awaitingDory(t) {
-  return t.conversation?.length && t.conversation.at(-1).by === "human"
-    && (t.status === "chat" || t.status === "plan_created");
+  return t.conversation?.length && t.conversation.at(-1).by === "human" && t.status !== "in_progress";
+}
+
+// Goal progress for the card face: "wave 2 · 3/5 done".
+function goalSummary(t) {
+  const subs = board.tasks.filter(x => x.parent === t.id);
+  const done = subs.filter(x => x.status === "done").length;
+  if (!subs.length) return { text: t.pending_wave ? `${t.pending_wave.length} subtasks planned for wave 1` : "goal", pct: 0 };
+  return { text: `wave ${t.wave || 1} · ${done}/${subs.length} done`, pct: Math.round((100 * done) / subs.length) };
 }
 
 function render() {
@@ -283,7 +299,8 @@ function render() {
 
     for (const t of tasks) {
       const card = document.createElement("div");
-      card.className = "card";
+      card.className = "card" + (t.kind === "goal" ? " goal" : "");
+      const goal = t.kind === "goal" ? goalSummary(t) : null;
       card.draggable = true;
       card.dataset.id = t.id;
       const msgs = t.conversation?.length || 0;
@@ -292,6 +309,8 @@ function render() {
         <div class="top">
           <span class="id">${t.id}</span>
           <span class="prio p${t.priority}">P${t.priority}</span>
+          ${goal ? `<span class="goal-badge" title="A big piece of work Dory splits into waves of subtasks">Goal</span>` : ""}
+          ${t.parent ? `<span class="parent" data-goal="${t.parent}" title="Open the goal this subtask belongs to">↳ ${t.parent}${t.wave ? ` · wave ${t.wave}` : ""}</span>` : ""}
         </div>
         <div class="title"></div>
         <div class="meta">
@@ -299,8 +318,10 @@ function render() {
           ${msgs ? `<span class="msgs${awaitingDory(t) ? " waiting" : ""}">💬 ${msgs}</span>` : ""}
           ${t.depends_on?.length ? `<span>⛓ ${t.depends_on.join(", ")}</span>` : ""}
           ${t.test_cmd ? `<span class="test">✓ test</span>` : ""}
-          ${t.brief ? `<span>📄 plan</span>` : ""}
-        </div>`;
+          ${t.brief ? `<span>📄 ${goal ? "outline" : "plan"}</span>` : ""}
+          ${goal ? `<span>${goal.text}</span>` : ""}
+        </div>
+        ${goal && goal.pct ? `<div class="progress"><span style="width:${goal.pct}%"></span></div>` : ""}`;
       card.querySelector(".title").textContent = t.title;
       card.title = t.notes || t.title;
       card.querySelector(".del").addEventListener("click", async e => {
@@ -309,6 +330,10 @@ function render() {
         if (openTaskId === t.id) closeDrawer();
         try { await api(`/api/tasks/${t.id}`, { method: "DELETE" }); } catch (err) { toast(err.message); }
         refresh();
+      });
+      card.querySelector(".parent")?.addEventListener("click", e => {
+        e.stopPropagation();
+        openDrawer(e.currentTarget.dataset.goal);
       });
       card.addEventListener("click", () => openDrawer(t.id));
       card.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", t.id));

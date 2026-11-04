@@ -27,7 +27,7 @@ const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runn
 
 // Dory stages that produce marker text only — no code, no .think/ brain files.
 // Kinds dispatched by dory.mjs: chat | respond | plan | exec.
-const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 
 function isEnabled(): boolean {
   try {

@@ -45,7 +45,7 @@ const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runn
 // Dory stages whose entire deliverable is marker text. "exec" is deliberately
 // absent: that stage IS the code-writing one. Kinds dispatched by dory.mjs:
 // chat | respond | plan | exec.
-const READONLY_KINDS = ["chat", "plan", "respond"];
+const READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 
 // Tools a planning/chat job may use. Mirrors HEADLESS_ARGS in dory.mjs
 // (`--tools read,bash,web_search`) plus PiForge's read-only extras, so both
@@ -188,7 +188,7 @@ export default function doryPlanGuard(pi: ExtensionAPI) {
     ctx.ui.notify(
       active
         ? `dory-plan-guard active (dory ${active} job — read-only: no write/edit, no mutating bash; the marker block is the deliverable)`
-        : "dory-plan-guard active — enforces read-only during dory chat/plan/respond jobs (exec untouched)",
+        : "dory-plan-guard active — enforces read-only during dory chat/plan/respond/wave jobs (exec untouched)",
       "info",
     );
   });
@@ -301,7 +301,7 @@ export default function doryPlanGuard(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("dory-plan-guard", {
-    description: "Show dory-plan-guard status (read-only enforcement for Dory chat/plan/respond jobs)",
+    description: "Show dory-plan-guard status (read-only enforcement for Dory chat/plan/respond/wave jobs)",
     handler: async (_args, ctx) => {
       const active = activeStage();
       const job = doryJob();

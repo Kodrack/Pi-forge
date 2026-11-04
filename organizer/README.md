@@ -75,11 +75,51 @@ task's `tasks/T-NNN.md` + `tests/T-NNN.sh` files, strips it from other tasks'
 ## The Dory engine (`board/dory.mjs`)
 
 Runs **inside the board server** — launching the board launches Dory. One job
-per 5s tick, priority: replies (chat + plan revisions) → planning → execution.
+per 5s tick, priority: replies (chat + plan revisions) → goals (start a wave,
+run the goal test, plan the next wave) → execution → planning → pickup.
 All LLM work via `pi` subprocesses; personas live in `dory-persona.md`
-(`## Chat`, `## Plan`, `## Revise` sections).
+(`## Chat`, `## Plan`, `## Revise`, `## Revise goal`, `## Wave` sections).
 
-**Dory's own stages are read-only.** A chat/plan/revise job's entire deliverable
+**Goals: long tasks in waves** (design + rationale: `LONG-HORIZON.md`). When a
+card is too big for one executor run, the plan job answers with a **goal**
+instead of a brief: a one-paragraph goal, an end-to-end **goal test**, and a
+first wave of 2–4 small **subtasks**. The outline waits in Plan Created like any
+plan (reply to change it, or to turn it back into one card).
+
+1. Drag the goal to Approved (dispatch ON). Dory checks the goal test *fails*
+   (a test that already passes tests nothing), creates the wave as linked
+   subtask cards (`↳ T-020 · wave 1` on the board) and moves the goal to In
+   Progress. The goal itself never runs the executor.
+2. Each subtask is planned **just in time**: only once the subtasks it depends
+   on are Done, so its plan is written against code that exists. Every subtask
+   plan comes back to you in Plan Created; you approve each one.
+3. A subtask that passes leaves a **handoff note** in `handoffs/T-NNN.md`: the
+   files that run changed, plus the executor's own `<<<HANDOFF>>>` notes. Later
+   subtask plans, executor runs and wave jobs of the same goal read them.
+4. When a wave is all Done, the engine runs the goal test. Pass → goal Done.
+   Fail → a read-only **wave** job plans the next wave from the goal, the
+   handoffs and the failing output — or answers STUCK with what it needs from
+   you (goal → Blocked).
+5. A Blocked subtask pauses its goal until you fix or delete it.
+
+Budgets are enforced in code, never trusted to the prompt — set them in
+`config.json`:
+
+```json
+"long_horizon": { "max_subtasks_per_wave": 4, "max_waves": 5, "max_subtasks_total": 15 }
+```
+
+Subtasks can't be split again (depth 1), duplicate titles are dropped, bad
+dependencies are dropped and reported, and a dependency cycle rejects the whole
+wave. Out of budget with the goal test still failing → goal Blocked with the
+last test output. Only `review` autonomy exists today: every subtask waits for
+your approval.
+
+**Planning order changed for every card:** a card in Plan Queue is planned only
+once the cards it `depends_on` are Done (before, cards from 📥 ingest were all
+planned at once, against code that didn't exist yet).
+
+**Dory's own stages are read-only.** A chat/plan/revise/wave job's entire deliverable
 is the marker block the engine parses out of its final message — it writes no
 files, and the *executor* (a separate session dispatched from Approved) is what
 implements the card. Headless jobs get that from `--tools read,bash,web_search`;

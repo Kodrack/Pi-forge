@@ -22,7 +22,7 @@ const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runn
 
 // Dory stages that produce marker text only — no code, no .think/ brain files.
 // Kinds dispatched by dory.mjs: chat | respond | plan | exec.
-const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 
 // How many turns without a _state.md write before we inject a reminder
 const STALE_TURN_THRESHOLD = 5;

@@ -145,7 +145,7 @@ const sideDoors = [
 
 const checks = [
   ["exec stage is out of scope (only chat/plan/respond enforced)",
-    !READONLY_KINDS.includes("exec") && ["chat", "plan", "respond"].every((k) => READONLY_KINDS.includes(k))],
+    !READONLY_KINDS.includes("exec") && ["chat", "plan", "respond", "wave"].every((k) => READONLY_KINDS.includes(k))],
   ["recorded T-006 shape → all 3 post-brief writes blocked", (() => {
     const r = run(t006);
     return r.blocks === 3 && r.blockedAt.join(",") === "4,5,6";

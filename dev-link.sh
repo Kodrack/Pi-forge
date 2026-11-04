@@ -31,7 +31,7 @@ ln -sfn "$PIFORGE_DIR/config/piforge-self.md" "$HOME/.pi/piforge-self.md"
 
 # Dory board + engine — dory-board.ts starts it from ~/.pi/organizer/board/
 mkdir -p "$HOME/.pi/organizer/board"
-for f in server.mjs index.html dory.mjs; do
+for f in server.mjs board-core.mjs index.html dory.mjs; do
   ln -sfn "$PIFORGE_DIR/organizer/board/$f" "$HOME/.pi/organizer/board/$f"
 done
 ln -sfn "$PIFORGE_DIR/organizer/dory-persona.md" "$HOME/.pi/organizer/dory-persona.md"

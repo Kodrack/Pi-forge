@@ -71,7 +71,7 @@ The file system is your brain. Use it. Stop holding state in the conversation.`;
 // moves), so those stages get raised TEXT caps. The thinking channel keeps the
 // normal caps — a runaway there is still a runaway. Kinds from dory.mjs:
 // chat | respond | plan | exec (exec is a normal coding session).
-const DORY_READONLY_KINDS = ["chat", "plan", "respond"];
+const DORY_READONLY_KINDS = ["chat", "plan", "respond", "wave"];
 const DORY_RUNNER_STATE = path.join(os.homedir(), ".pi", "organizer", "dory-runner.json");
 const DORY_TEXT_ABORT_CHARS = 24000;  // per text block, dory marker deliverable
 const DORY_TURN_ABORT_CHARS = 40000;  // cumulative per turn, dory marker deliverable
