@@ -572,9 +572,18 @@ export default function voiceInput(pi: ExtensionAPI) {
     return DEFAULT_ENGINE;
   }
 
+  // Background setup can outlive the session that started it (/reload, /new,
+  // a /dory job replacing the session, a `pi -p` job ending). Pi then throws
+  // "This extension ctx is stale…" from ctx.ui — and an uncaught throw there
+  // CRASHED the whole pi process. Every UI call from background work goes
+  // through these: a stale ctx just means nobody is watching any more.
+  function safeUi(fn: () => void): void {
+    try { fn(); } catch { /* session gone — nothing to show */ }
+  }
+
   function status(ctx: ExtensionContext, text: string, idle = true): void {
     if (idle) idleStatus = text;
-    ctx.ui.setStatus("voice-input", text);
+    safeUi(() => ctx.ui.setStatus("voice-input", text));
   }
 
   // ── Background auto-setup: venv → pip install → model pre-download ──
@@ -598,7 +607,7 @@ export default function voiceInput(pi: ExtensionAPI) {
       //    than attempting a pip install that cannot succeed.
       if (engine === "parakeet" && !IS_APPLE_SILICON) {
         status(ctx, "🎤 parakeet needs Apple Silicon — run /stt moonshine");
-        ctx.ui.notify("voice-input: the parakeet engine requires Apple Silicon (mlx). Use /stt moonshine on this platform.", "error");
+        safeUi(() => ctx.ui.notify("voice-input: the parakeet engine requires Apple Silicon (mlx). Use /stt moonshine on this platform.", "error"));
         return false;
       }
 
@@ -607,7 +616,7 @@ export default function voiceInput(pi: ExtensionAPI) {
         const ffmpegPath = await installFfmpeg((m) => status(ctx, m));
         if (!ffmpegPath) {
           status(ctx, "🎤 ffmpeg not found — install it, then /reload");
-          ctx.ui.notify(`voice-input: ffmpeg is required and could not be auto-installed. Install it with:  ${ffmpegInstallHint()}`, "error");
+          safeUi(() => ctx.ui.notify(`voice-input: ffmpeg is required and could not be auto-installed. Install it with:  ${ffmpegInstallHint()}`, "error"));
           return false;
         }
       }
@@ -643,7 +652,7 @@ export default function voiceInput(pi: ExtensionAPI) {
     } catch (err: any) {
       logSetup(`SETUP FAILED (${engine}): ${err.message ?? err}`);
       status(ctx, `🎤 ${engine} setup failed — see ${SETUP_LOG}`);
-      ctx.ui.notify(`voice-input: ${engine} auto-setup failed (${String(err.message ?? err).split("\n")[0]}) — details in ${SETUP_LOG}`, "error");
+      safeUi(() => ctx.ui.notify(`voice-input: ${engine} auto-setup failed (${String(err.message ?? err).split("\n")[0]}) — details in ${SETUP_LOG}`, "error"));
       return false;
     }
   }
@@ -662,6 +671,11 @@ export default function voiceInput(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!isEnabled()) return;
+    // No screen = no keyboard, no mic, nobody to talk to: a `pi -p` job (Dory's
+    // background jobs, ingest, research sub-Pis). Don't install the editor hook
+    // or start the background setup there — that setup outliving the job is
+    // what crashed those processes.
+    if (!ctx.hasUI) return;
     // Compose with any editor factory another extension installed, so every
     // raw-char trigger keeps working regardless of load order.
     const prev = ctx.ui.getEditorComponent();
@@ -689,10 +703,10 @@ export default function voiceInput(pi: ExtensionAPI) {
         await resolveAudioDevice(ffmpeg);
         if (resolvedDevice) {
           const loc = IS_MAC ? ` (:${resolvedDevice.index})` : "";
-          ctx.ui.notify(
+          safeUi(() => ctx.ui.notify(
             `voice-input: mic → "${resolvedDevice.name}"${loc}${deviceNote ? ` · ${deviceNote}` : ""}`,
             deviceNote.startsWith("WARNING") ? "warning" : "info",
-          );
+          ));
         }
       } catch { /* setup path already reports its own failures */ }
     })();
